@@ -10,7 +10,9 @@ mod openai;
 mod opportunities;
 mod scanner;
 
-use db::{InsertProject, IdeaProject, ProjectDetail, ProjectRow, SaveIdeaProjectInput};
+use db::{
+    InsertProject, IdeaProject, ProjectDetail, ProjectRow, SaveIdeaProjectInput, UserProfile,
+};
 use case_study::CaseStudyPayload;
 use opportunities::OpportunityPayload;
 
@@ -128,6 +130,18 @@ fn delete_idea_project(state: State<'_, AppState>, id: i64) -> Result<(), String
     db::delete_idea_project(&conn, id)
 }
 
+#[tauri::command]
+fn get_user_profile(state: State<'_, AppState>) -> Result<Option<UserProfile>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::get_user_profile(&conn)
+}
+
+#[tauri::command]
+fn save_user_profile(state: State<'_, AppState>, profile: UserProfile) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::save_user_profile(&conn, &profile)
+}
+
 //
 // ───────────────────────────────────────────────────────────
 // ANALYSIS CORE
@@ -204,8 +218,9 @@ fn run_generate_opportunities_from_analysis(
 
 fn run_generate_case_study_from_analysis(
     analysis: &serde_json::Value,
+    writer_context: Option<&UserProfile>,
 ) -> Result<CaseStudyPayload, String> {
-    let user_message = case_study::build_case_study_user_message(analysis);
+    let user_message = case_study::build_case_study_user_message(analysis, writer_context);
 
     let raw = match ai_provider().as_str() {
         "openai" => {
@@ -269,9 +284,11 @@ fn generate_case_study(state: State<'_, AppState>, id: i64) -> Result<CaseStudyP
         "No stored analysis for this project. Complete analysis first, then try again.".to_string()
     })?;
 
+    let profile = db::get_user_profile(&conn)?;
+
     drop(conn);
 
-    run_generate_case_study_from_analysis(&analysis)
+    run_generate_case_study_from_analysis(&analysis, profile.as_ref())
 }
 
 //
@@ -402,6 +419,8 @@ pub fn run() {
             get_idea_project,
             delete_idea_project,
             generate_case_study,
+            get_user_profile,
+            save_user_profile,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run app");

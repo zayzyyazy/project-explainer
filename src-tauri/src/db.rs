@@ -81,9 +81,61 @@ fn migrate(conn: &Connection) -> Result<(), String> {
             );
             CREATE INDEX IF NOT EXISTS idx_idea_projects_source ON idea_projects(source_project_id);
             CREATE INDEX IF NOT EXISTS idx_idea_projects_saved_at ON idea_projects(saved_at);
+            CREATE TABLE IF NOT EXISTS user_profile (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                role TEXT,
+                what_i_build_json TEXT NOT NULL DEFAULT '[]',
+                app_goal TEXT,
+                updated_at TEXT NOT NULL DEFAULT ''
+            );
             "#,
         )
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Local onboarding / writer context (optional). Injected into case study generation.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct UserProfile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub what_i_build: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_goal: Option<String>,
+}
+
+pub fn get_user_profile(conn: &Connection) -> Result<Option<UserProfile>, String> {
+    let row: Option<(Option<String>, String, Option<String>)> = conn
+        .query_row(
+            "SELECT role, what_i_build_json, app_goal FROM user_profile WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    let Some((role, w_json, app_goal)) = row else {
+        return Ok(None);
+    };
+
+    let what_i_build: Vec<String> = serde_json::from_str(&w_json).unwrap_or_default();
+    Ok(Some(UserProfile {
+        role,
+        what_i_build,
+        app_goal,
+    }))
+}
+
+pub fn save_user_profile(conn: &Connection, p: &UserProfile) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let w_json = serde_json::to_string(&p.what_i_build).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO user_profile (id, role, what_i_build_json, app_goal, updated_at) VALUES (1, ?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE SET role = excluded.role, what_i_build_json = excluded.what_i_build_json, app_goal = excluded.app_goal, updated_at = excluded.updated_at",
+        params![p.role, w_json, p.app_goal, now],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 

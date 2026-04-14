@@ -79,6 +79,9 @@ export default function Dashboard() {
         >
           {busy ? "Importing…" : "Import Project"}
         </button>
+        <Link to="/setup" className="btn">
+          Profile
+        </Link>
         <Link to="/case-study" className="btn">
           Case Study
         </Link>

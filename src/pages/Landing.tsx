@@ -53,12 +53,16 @@ export default function Landing() {
         <h2>What you get</h2>
         <ul className="landing-bullets">
           <li>
+            <strong>Optional writer profile</strong> — freelancer, indie, or dev;
+            tunes case study tone (stored locally)
+          </li>
+          <li>
             <strong>Grounded output</strong> — tied to files and patterns, not
             fantasy features
           </li>
           <li>
-            <strong>Case study mode</strong> — narrative you can paste into
-            proposals and portfolios
+            <strong>Case study mode</strong> — problem → stakes → approach →
+            outcome, plus illustrative CLI / UI / file “proof” blocks
           </li>
           <li>
             <strong>Opportunities mode</strong> — narrow ways to package what

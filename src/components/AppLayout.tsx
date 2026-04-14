@@ -13,6 +13,7 @@ export default function AppLayout() {
 
         <nav className="top-nav">
           <Link to="/dashboard">Dashboard</Link>
+          <Link to="/setup">Profile</Link>
           <Link to="/case-study">Case Study</Link>
           <Link to="/opportunities">Opportunities</Link>
           <Link to="/idea-projects">Idea Projects</Link>

@@ -24,10 +24,19 @@ export interface OpportunityPayload {
   opportunities: Opportunity[];
 }
 
-/** Client-winning case study (from stored analysis). */
+/** Proof snippet: inferred CLI, file sample, or UI description — makes the case study feel real. */
+export interface CaseStudyProofBlock {
+  kind: string;
+  title: string;
+  body: string;
+}
+
+/** Client-winning case study (from stored analysis + optional writer profile). */
 export interface CaseStudyPayload {
   title: string;
   problem: string;
+  why_it_mattered: string;
+  approach: string;
   solution: string;
   outcome: string;
   outcome_basis: string;
@@ -35,6 +44,22 @@ export interface CaseStudyPayload {
   linkedin_hook: string;
   quote_ready_one_liner: string;
   what_we_built: string[];
+  proof_blocks: CaseStudyProofBlock[];
+}
+
+/** Local onboarding — injected into case study generation when set. */
+export interface UserProfile {
+  role?: string | null;
+  what_i_build: string[];
+  app_goal?: string | null;
+}
+
+export function isUserProfileFilled(p: UserProfile | null | undefined): boolean {
+  if (!p) return false;
+  if (p.role && String(p.role).length > 0) return true;
+  if (p.what_i_build?.length) return true;
+  if (p.app_goal && String(p.app_goal).length > 0) return true;
+  return false;
 }
 
 export interface ProductIntelligence {
