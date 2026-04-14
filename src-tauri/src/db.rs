@@ -59,6 +59,28 @@ fn migrate(conn: &Connection) -> Result<(), String> {
                 FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_analyses_project ON analyses(project_id);
+            CREATE TABLE IF NOT EXISTS idea_projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_project_id INTEGER NOT NULL,
+                source_project_name TEXT NOT NULL,
+                title TEXT NOT NULL,
+                what_it_is TEXT NOT NULL,
+                problem TEXT NOT NULL,
+                why_this_problem_is_real_now TEXT NOT NULL,
+                target_customer TEXT NOT NULL,
+                who_exactly_to_contact TEXT NOT NULL,
+                how_to_package TEXT NOT NULL,
+                pricing_logic TEXT NOT NULL,
+                distribution_strategy_json TEXT NOT NULL,
+                first_3_steps_to_validate_json TEXT NOT NULL,
+                risk_level TEXT NOT NULL,
+                why_this_could_fail TEXT NOT NULL,
+                saved_at TEXT NOT NULL,
+                UNIQUE(source_project_id, title),
+                FOREIGN KEY(source_project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_idea_projects_source ON idea_projects(source_project_id);
+            CREATE INDEX IF NOT EXISTS idx_idea_projects_saved_at ON idea_projects(saved_at);
             "#,
         )
         .map_err(|e| e.to_string())?;
@@ -233,4 +255,171 @@ pub fn get_project_path(conn: &Connection, id: i64) -> Result<Option<String>, St
     })
     .optional()
     .map_err(|e| e.to_string())
+}
+
+//
+// ───────────────────────────────────────────────────────────
+// Idea projects (saved opportunities) — separate from analyses
+// ───────────────────────────────────────────────────────────
+//
+
+#[derive(Debug, Deserialize)]
+pub struct SaveIdeaProjectInput {
+    pub source_project_id: i64,
+    pub title: String,
+    pub what_it_is: String,
+    pub problem: String,
+    pub why_this_problem_is_real_now: String,
+    pub target_customer: String,
+    pub who_exactly_to_contact: String,
+    pub how_to_package: String,
+    pub pricing_logic: String,
+    pub distribution_strategy: Vec<String>,
+    pub first_3_steps_to_validate: Vec<String>,
+    pub risk_level: String,
+    pub why_this_could_fail: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IdeaProject {
+    pub id: i64,
+    pub source_project_id: i64,
+    pub source_project_name: String,
+    pub title: String,
+    pub what_it_is: String,
+    pub problem: String,
+    pub why_this_problem_is_real_now: String,
+    pub target_customer: String,
+    pub who_exactly_to_contact: String,
+    pub how_to_package: String,
+    pub pricing_logic: String,
+    pub distribution_strategy: Vec<String>,
+    pub first_3_steps_to_validate: Vec<String>,
+    pub risk_level: String,
+    pub why_this_could_fail: String,
+    pub saved_at: String,
+}
+
+fn row_to_idea_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<IdeaProject> {
+    let dist_json: String = row.get(11)?;
+    let steps_json: String = row.get(12)?;
+    let dist: Vec<String> = serde_json::from_str(&dist_json).unwrap_or_default();
+    let steps: Vec<String> = serde_json::from_str(&steps_json).unwrap_or_default();
+    Ok(IdeaProject {
+        id: row.get(0)?,
+        source_project_id: row.get(1)?,
+        source_project_name: row.get(2)?,
+        title: row.get(3)?,
+        what_it_is: row.get(4)?,
+        problem: row.get(5)?,
+        why_this_problem_is_real_now: row.get(6)?,
+        target_customer: row.get(7)?,
+        who_exactly_to_contact: row.get(8)?,
+        how_to_package: row.get(9)?,
+        pricing_logic: row.get(10)?,
+        distribution_strategy: dist,
+        first_3_steps_to_validate: steps,
+        risk_level: row.get(13)?,
+        why_this_could_fail: row.get(14)?,
+        saved_at: row.get(15)?,
+    })
+}
+
+pub fn save_idea_project(conn: &Connection, input: SaveIdeaProjectInput) -> Result<i64, String> {
+    let source_name: String = conn
+        .query_row(
+            "SELECT name FROM projects WHERE id = ?1",
+            params![input.source_project_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Source project not found.".to_string())?;
+
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM idea_projects WHERE source_project_id = ?1 AND title = ?2",
+            params![input.source_project_id, input.title],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if exists > 0 {
+        return Err(
+            "This idea is already saved for this project (same title).".to_string(),
+        );
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let dist = serde_json::to_string(&input.distribution_strategy).map_err(|e| e.to_string())?;
+    let steps =
+        serde_json::to_string(&input.first_3_steps_to_validate).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        r#"INSERT INTO idea_projects (
+            source_project_id, source_project_name, title, what_it_is, problem,
+            why_this_problem_is_real_now, target_customer, who_exactly_to_contact,
+            how_to_package, pricing_logic, distribution_strategy_json,
+            first_3_steps_to_validate_json, risk_level, why_this_could_fail, saved_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"#,
+        params![
+            input.source_project_id,
+            source_name,
+            input.title,
+            input.what_it_is,
+            input.problem,
+            input.why_this_problem_is_real_now,
+            input.target_customer,
+            input.who_exactly_to_contact,
+            input.how_to_package,
+            input.pricing_logic,
+            dist,
+            steps,
+            input.risk_level,
+            input.why_this_could_fail,
+            now,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn list_idea_projects(conn: &Connection) -> Result<Vec<IdeaProject>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, source_project_id, source_project_name, title, what_it_is, problem, \
+             why_this_problem_is_real_now, target_customer, who_exactly_to_contact, \
+             how_to_package, pricing_logic, distribution_strategy_json, \
+             first_3_steps_to_validate_json, risk_level, why_this_could_fail, saved_at \
+             FROM idea_projects ORDER BY datetime(saved_at) DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row_to_idea_project(row))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+pub fn get_idea_project(conn: &Connection, id: i64) -> Result<Option<IdeaProject>, String> {
+    let row = conn
+        .query_row(
+            "SELECT id, source_project_id, source_project_name, title, what_it_is, problem, \
+             why_this_problem_is_real_now, target_customer, who_exactly_to_contact, \
+             how_to_package, pricing_logic, distribution_strategy_json, \
+             first_3_steps_to_validate_json, risk_level, why_this_could_fail, saved_at \
+             FROM idea_projects WHERE id = ?1",
+            params![id],
+            |row| row_to_idea_project(row),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(row)
+}
+
+pub fn delete_idea_project(conn: &Connection, id: i64) -> Result<(), String> {
+    let n = conn
+        .execute("DELETE FROM idea_projects WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("Saved idea not found.".to_string());
+    }
+    Ok(())
 }

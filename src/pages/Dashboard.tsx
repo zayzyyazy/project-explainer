@@ -79,6 +79,9 @@ export default function Dashboard() {
         <Link to="/opportunities" className="btn">
           Opportunities dashboard
         </Link>
+        <Link to="/idea-projects" className="btn">
+          Idea Projects
+        </Link>
         <input
           className="search"
           type="search"

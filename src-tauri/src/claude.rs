@@ -48,9 +48,9 @@ pub struct AnalysisPayload {
     pub project_intent: String,
     pub when_built: String,
     pub one_line_summary: String,
-pub deep_explanation: String,
-pub full_narrative_explanation: String,
-pub problem_it_solves: String,
+    pub deep_explanation: String,
+    pub full_narrative_explanation: String,
+    pub problem_it_solves: String,
     pub why_it_matters: String,
     pub core_features: Vec<String>,
     pub key_flows: Vec<String>,
@@ -114,18 +114,24 @@ pub fn build_user_message(
 
 pub fn extract_json_text(raw: &str) -> String {
     let s = raw.trim();
+
     if let Some(pos) = s.find("```") {
         let mut inner = &s[pos + 3..];
         inner = inner.trim_start();
+
         if inner.starts_with("json") {
             inner = &inner[4..];
         }
-        inner = inner.trim_start(); // after optional "json" label
+
+        inner = inner.trim_start();
+
         if let Some(end) = inner.rfind("```") {
             return inner[..end].trim().to_string();
         }
+
         return inner.trim().to_string();
     }
+
     s.to_string()
 }
 
@@ -165,6 +171,7 @@ pub fn parse_and_validate(json_str: &str) -> Result<AnalysisPayload, String> {
         "tradeoffs_and_limitations",
         "example_outputs",
     ];
+
     for f in top_level_arrays {
         normalize_str_to_array(&mut v, f);
     }
@@ -187,6 +194,7 @@ pub fn parse_and_validate(json_str: &str) -> Result<AnalysisPayload, String> {
                     }
                 }
             }
+
             if let Some(gtm) = pi_obj.get_mut("go_to_market") {
                 if let Some(gtm_obj) = gtm.as_object_mut() {
                     for field in ["where_to_sell", "first_steps"] {
@@ -208,9 +216,11 @@ pub fn parse_and_validate(json_str: &str) -> Result<AnalysisPayload, String> {
     if parsed.full_narrative_explanation.trim().is_empty() {
         return Err("full_narrative_explanation must be non-empty".into());
     }
+
     if parsed.core_features.is_empty() || parsed.tech_stack.is_empty() {
         return Err("core_features and tech_stack must not be empty".into());
     }
+
     if parsed.important_files.is_empty() {
         return Err("important_files must not be empty".into());
     }
@@ -258,72 +268,11 @@ Return only the JSON object."#;
 //
 
 pub fn call_claude(api_key: &str, model: &str, user_message: &str) -> Result<String, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let key = api_key.trim();
-    if key.is_empty() {
-        return Err("API key is empty".into());
-    }
-
-    // 🔴 CRITICAL FIX: force JSON via user message, not just system
-    let strict_user_message = format!(
-        "Return ONLY a valid JSON object. No markdown, no explanation.\n\n{}",
-        user_message
-    );
-
-    let body = json!({
-        "model": model,
-        "max_tokens": 16384,
-        "temperature": 0,
-        "system": ANALYSIS_SYSTEM_PROMPT,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": strict_user_message
-                    }
-                ]
-            }
-        ]
-    });
-
-    let res = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", key)
-        .header("anthropic-version", "2023-06-01")
-        .json(&body)
-        .send()
-        .map_err(|e| format!("Network error: {}", e))?;
-
-    let status = res.status();
-    let raw = res.text().unwrap_or_default();
-
-    if !status.is_success() {
-        return Err(format!("Claude API error: {}", raw));
-    }
-
-    let v: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("Claude HTTP envelope was not JSON: {}", e))?;
-
-    let text = v
-        .pointer("/content/0/text")
-        .and_then(|x| x.as_str())
-        .ok_or_else(|| format!("Unexpected Claude response shape: {}", raw))?;
-
-    // 🔴 HARD FAIL if Claude still gives markdown
-    if !text.trim().starts_with("{") {
-        return Err(format!("Claude returned non-JSON text:\n{}", text));
-    }
-
-    Ok(text.to_string())
+    call_claude_with_system(api_key, model, ANALYSIS_SYSTEM_PROMPT, user_message)
 }
 
-/// Same transport as [`call_claude`], but accepts a custom system prompt (e.g. V2 opportunities).
+/// Same transport as `call_claude`, but accepts a custom system prompt
+/// so V2 features can use a different schema without touching V1.
 pub fn call_claude_with_system(
     api_key: &str,
     model: &str,

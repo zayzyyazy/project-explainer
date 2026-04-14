@@ -5,6 +5,25 @@ export interface ImportantFile {
   possible_gaps_or_uncertainties: string;
 }
 
+export interface Opportunity {
+  title: string;
+  what_it_is: string;
+  problem: string;
+  why_this_problem_is_real_now: string;
+  target_customer: string;
+  who_exactly_to_contact: string;
+  how_to_package: string;
+  pricing_logic: string;
+  distribution_strategy: string[];
+  first_3_steps_to_validate: string[];
+  risk_level: string;
+  why_this_could_fail: string;
+}
+
+export interface OpportunityPayload {
+  opportunities: Opportunity[];
+}
+
 export interface ProductIntelligence {
   category: string;
   target_users: string[];
@@ -63,8 +82,14 @@ export interface ProjectDetail extends ProjectListItem {
   raw_file_list_truncated: boolean;
 }
 
-/** V2 — generated on demand; not part of AnalysisPayload */
-export interface Opportunity {
+/** Alias: matches Rust `ProjectRow` from `list_projects`. */
+export type ProjectRow = ProjectListItem;
+
+/** Persisted “Idea Project” (saved opportunity). */
+export interface IdeaProject {
+  id: number;
+  source_project_id: number;
+  source_project_name: string;
   title: string;
   what_it_is: string;
   problem: string;
@@ -77,8 +102,5 @@ export interface Opportunity {
   first_3_steps_to_validate: string[];
   risk_level: string;
   why_this_could_fail: string;
-}
-
-export interface OpportunityPayload {
-  opportunities: Opportunity[];
+  saved_at: string;
 }

@@ -9,7 +9,7 @@ mod openai;
 mod opportunities;
 mod scanner;
 
-use db::{InsertProject, ProjectDetail, ProjectRow};
+use db::{InsertProject, IdeaProject, ProjectDetail, ProjectRow, SaveIdeaProjectInput};
 use opportunities::OpportunityPayload;
 
 struct AppState {
@@ -64,6 +64,7 @@ fn openai_key() -> Result<String, String> {
     let key = std::env::var("OPENAI_API_KEY").map_err(|_| {
         "OPENAI_API_KEY is not set. Add it to src-tauri/.env when AI_PROVIDER=openai.".to_string()
     })?;
+
     Ok(key.trim().to_string())
 }
 
@@ -96,6 +97,33 @@ fn get_project(state: State<'_, AppState>, id: i64) -> Result<Option<ProjectDeta
 fn delete_project(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     db::delete_project(&conn, id)
+}
+
+#[tauri::command]
+fn save_idea_project(
+    state: State<'_, AppState>,
+    input: SaveIdeaProjectInput,
+) -> Result<i64, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::save_idea_project(&conn, input)
+}
+
+#[tauri::command]
+fn list_idea_projects(state: State<'_, AppState>) -> Result<Vec<IdeaProject>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::list_idea_projects(&conn)
+}
+
+#[tauri::command]
+fn get_idea_project(state: State<'_, AppState>, id: i64) -> Result<Option<IdeaProject>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::get_idea_project(&conn, id)
+}
+
+#[tauri::command]
+fn delete_idea_project(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::delete_idea_project(&conn, id)
 }
 
 //
@@ -145,6 +173,7 @@ fn run_generate_opportunities_from_analysis(
     analysis: &serde_json::Value,
 ) -> Result<OpportunityPayload, String> {
     let user_message = opportunities::build_opportunity_user_message(analysis);
+
     let raw = match ai_provider().as_str() {
         "openai" => {
             let api_key = openai_key()?;
@@ -167,24 +196,32 @@ fn run_generate_opportunities_from_analysis(
             )?
         }
     };
+
     opportunities::parse_and_validate_opportunities(&raw)
 }
 
 //
 // ───────────────────────────────────────────────────────────
-// V2 — OPPORTUNITIES (isolated; does not touch stored analysis)
+// V2 — OPPORTUNITIES
 // ───────────────────────────────────────────────────────────
 //
 
 #[tauri::command]
-fn generate_opportunities(state: State<'_, AppState>, id: i64) -> Result<OpportunityPayload, String> {
+fn generate_opportunities(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<OpportunityPayload, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
+
     let detail = db::get_project_by_id(&conn, id)?
         .ok_or_else(|| "Project not found".to_string())?;
+
     let analysis = detail.analysis.ok_or_else(|| {
         "No stored analysis for this project. Complete analysis first, then try again.".to_string()
     })?;
+
     drop(conn);
+
     run_generate_opportunities_from_analysis(&analysis)
 }
 
@@ -261,7 +298,6 @@ fn reanalyze_project(state: State<'_, AppState>, id: i64) -> Result<ProjectDetai
     };
 
     let analysis = run_analysis_for_path(&path)?;
-
     let raw_json = serde_json::to_value(&analysis).map_err(|e| e.to_string())?;
 
     let conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -282,14 +318,13 @@ fn reanalyze_project(state: State<'_, AppState>, id: i64) -> Result<ProjectDetai
 
 //
 // ───────────────────────────────────────────────────────────
-// APP ENTRY (STABLE)
+// APP ENTRY
 // ───────────────────────────────────────────────────────────
 //
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let env_path = "/Users/zay/Desktop/Projects/project-explainer-os/src-tauri/.env";
-
     dotenvy::from_path(env_path).ok();
 
     tauri::Builder::default()
@@ -313,6 +348,10 @@ pub fn run() {
             delete_project,
             reanalyze_project,
             generate_opportunities,
+            save_idea_project,
+            list_idea_projects,
+            get_idea_project,
+            delete_idea_project,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run app");
