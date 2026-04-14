@@ -76,6 +76,9 @@ export default function Dashboard() {
         >
           {busy ? "Importing…" : "Import Project"}
         </button>
+        <Link to="/opportunities" className="btn">
+          Opportunities dashboard
+        </Link>
         <input
           className="search"
           type="search"

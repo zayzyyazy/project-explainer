@@ -288,3 +288,47 @@ button {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* V2 — Opportunities dashboard only */
+.opportunity-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.opportunity-card {
+  border-left: 3px solid #4a6ec4;
+}
+
+.opportunity-card h2 {
+  margin-bottom: 0.65rem;
+  font-size: 1.05rem;
+  color: #d4dcf0;
+}
+
+.op-field {
+  margin-top: 0.55rem;
+}
+
+.op-label {
+  font-size: 0.72rem;
+  color: #8a93a3;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.2rem;
+}
+
+.op-body {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: #d0d6e0;
+}
+
+.op-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.88rem;
+  line-height: 1.4;
+  color: #d0d6e0;
+}

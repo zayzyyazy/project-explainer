@@ -62,3 +62,23 @@ export interface ProjectDetail extends ProjectListItem {
   file_index_sample: string[];
   raw_file_list_truncated: boolean;
 }
+
+/** V2 — generated on demand; not part of AnalysisPayload */
+export interface Opportunity {
+  title: string;
+  what_it_is: string;
+  problem: string;
+  why_this_problem_is_real_now: string;
+  target_customer: string;
+  who_exactly_to_contact: string;
+  how_to_package: string;
+  pricing_logic: string;
+  distribution_strategy: string[];
+  first_3_steps_to_validate: string[];
+  risk_level: string;
+  why_this_could_fail: string;
+}
+
+export interface OpportunityPayload {
+  opportunities: Opportunity[];
+}

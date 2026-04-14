@@ -6,9 +6,11 @@ use tauri::{Manager, State};
 mod claude;
 mod db;
 mod openai;
+mod opportunities;
 mod scanner;
 
 use db::{InsertProject, ProjectDetail, ProjectRow};
+use opportunities::OpportunityPayload;
 
 struct AppState {
     db: Mutex<rusqlite::Connection>,
@@ -139,6 +141,53 @@ fn run_analysis_for_path(path_str: &str) -> Result<claude::AnalysisPayload, Stri
     claude::parse_and_validate(&raw)
 }
 
+fn run_generate_opportunities_from_analysis(
+    analysis: &serde_json::Value,
+) -> Result<OpportunityPayload, String> {
+    let user_message = opportunities::build_opportunity_user_message(analysis);
+    let raw = match ai_provider().as_str() {
+        "openai" => {
+            let api_key = openai_key()?;
+            let model = openai_model();
+            openai::call_openai_with_system(
+                &api_key,
+                &model,
+                opportunities::OPPORTUNITY_SYSTEM_PROMPT,
+                &user_message,
+            )?
+        }
+        _ => {
+            let api_key = anthropic_key()?;
+            let model = anthropic_model();
+            claude::call_claude_with_system(
+                &api_key,
+                &model,
+                opportunities::OPPORTUNITY_SYSTEM_PROMPT,
+                &user_message,
+            )?
+        }
+    };
+    opportunities::parse_and_validate_opportunities(&raw)
+}
+
+//
+// ───────────────────────────────────────────────────────────
+// V2 — OPPORTUNITIES (isolated; does not touch stored analysis)
+// ───────────────────────────────────────────────────────────
+//
+
+#[tauri::command]
+fn generate_opportunities(state: State<'_, AppState>, id: i64) -> Result<OpportunityPayload, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let detail = db::get_project_by_id(&conn, id)?
+        .ok_or_else(|| "Project not found".to_string())?;
+    let analysis = detail.analysis.ok_or_else(|| {
+        "No stored analysis for this project. Complete analysis first, then try again.".to_string()
+    })?;
+    drop(conn);
+    run_generate_opportunities_from_analysis(&analysis)
+}
+
 //
 // ───────────────────────────────────────────────────────────
 // IMPORT
@@ -233,27 +282,15 @@ fn reanalyze_project(state: State<'_, AppState>, id: i64) -> Result<ProjectDetai
 
 //
 // ───────────────────────────────────────────────────────────
-// APP ENTRY (FIXED)
+// APP ENTRY (STABLE)
 // ───────────────────────────────────────────────────────────
 //
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // 🔒 HARD ABSOLUTE PATH — always works regardless of how app is launched
     let env_path = "/Users/zay/Desktop/Projects/project-explainer-os/src-tauri/.env";
 
-    // Load .env explicitly
-    if let Err(e) = dotenvy::from_path(env_path) {
-        println!("⚠️ Failed to load .env: {}", e);
-    } else {
-        println!("✅ .env loaded from {}", env_path);
-    }
-
-    // Debug: confirm key is actually available
-    match std::env::var("ANTHROPIC_API_KEY") {
-        Ok(_) => println!("✅ ANTHROPIC_API_KEY is set"),
-        Err(_) => println!("❌ ANTHROPIC_API_KEY is MISSING"),
-    }
+    dotenvy::from_path(env_path).ok();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -275,6 +312,7 @@ pub fn run() {
             import_project,
             delete_project,
             reanalyze_project,
+            generate_opportunities,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run app");

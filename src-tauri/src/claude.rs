@@ -322,3 +322,73 @@ pub fn call_claude(api_key: &str, model: &str, user_message: &str) -> Result<Str
 
     Ok(text.to_string())
 }
+
+/// Same transport as [`call_claude`], but accepts a custom system prompt (e.g. V2 opportunities).
+pub fn call_claude_with_system(
+    api_key: &str,
+    model: &str,
+    system_prompt: &str,
+    user_message: &str,
+) -> Result<String, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Err("API key is empty".into());
+    }
+
+    let strict_user_message = format!(
+        "Return ONLY a valid JSON object. No markdown, no explanation.\n\n{}",
+        user_message
+    );
+
+    let body = json!({
+        "model": model,
+        "max_tokens": 16384,
+        "temperature": 0,
+        "system": system_prompt,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": strict_user_message
+                    }
+                ]
+            }
+        ]
+    });
+
+    let res = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", key)
+        .header("anthropic-version", "2023-06-01")
+        .json(&body)
+        .send()
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    let status = res.status();
+    let raw = res.text().unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(format!("Claude API error: {}", raw));
+    }
+
+    let v: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("Claude HTTP envelope was not JSON: {}", e))?;
+
+    let text = v
+        .pointer("/content/0/text")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| format!("Unexpected Claude response shape: {}", raw))?;
+
+    if !text.trim().starts_with("{") {
+        return Err(format!("Claude returned non-JSON text:\n{}", text));
+    }
+
+    Ok(text.to_string())
+}
