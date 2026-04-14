@@ -135,6 +135,26 @@ pub fn extract_json_text(raw: &str) -> String {
     s.to_string()
 }
 
+/// Trims leading/trailing whitespace on every JSON string value (recursive). Structure and keys unchanged.
+pub fn trim_json_string_values(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(map) => {
+            for val in map.values_mut() {
+                trim_json_string_values(val);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                trim_json_string_values(item);
+            }
+        }
+        serde_json::Value::String(s) => {
+            *s = s.trim().to_string();
+        }
+        _ => {}
+    }
+}
+
 //
 // ───────────────────────────────────────────────────────────
 // PARSE + VALIDATE
@@ -210,6 +230,8 @@ pub fn parse_and_validate(json_str: &str) -> Result<AnalysisPayload, String> {
         }
     }
 
+    trim_json_string_values(&mut v);
+
     let parsed: AnalysisPayload =
         serde_json::from_value(v).map_err(|e| format!("Schema error: {}", e))?;
 
@@ -234,18 +256,28 @@ pub fn parse_and_validate(json_str: &str) -> Result<AnalysisPayload, String> {
 // ───────────────────────────────────────────────────────────
 //
 
-pub const ANALYSIS_SYSTEM_PROMPT: &str = r#"You are a senior engineer analyzing a codebase snapshot provided in the user message.
+pub const ANALYSIS_SYSTEM_PROMPT: &str = r#"You are a senior engineer analyzing a codebase snapshot in the user message. Write like a builder making decisions—not like a consultant writing a report.
 
 STRICT OUTPUT RULES:
 - Output a SINGLE JSON object only. No text before or after it.
 - Do NOT wrap the JSON in markdown code fences. Do NOT use ``` anywhere.
 - Do NOT include markdown headings, bold, or lists outside JSON. All prose must be INSIDE JSON string fields.
-- Escape newlines inside strings as \n if needed, or use real newlines in JSON strings (valid JSON).
 
-STRUCTURE:
-- Use concise strings and arrays for dashboard-style fields (summaries, lists, product intelligence).
-- Put the long, detailed narrative writeup ONLY in the field "full_narrative_explanation" (string). That field may be long (multiple paragraphs) but must remain valid JSON string content.
-- "deep_explanation" should be a shorter technical summary than full_narrative_explanation.
+GROUNDING (NON-NEGOTIABLE):
+- Do NOT invent features, modules, integrations, or behaviors not evidenced by the provided files or clear file/index patterns.
+- Ground every factual claim in the snapshot (paths, code, config, filenames, stack signals). Prefer specific references over generalities.
+- If something is unclear or not visible in the snapshot, say "unknown" or state the uncertainty plainly in confidence_notes / possible_gaps_or_uncertainties—do not guess.
+- Never use vague hype: no "useful for many industries," "perfect for any team," "scalable platform for everyone," or similar.
+
+VERBOSITY:
+- Keep dashboard fields SHORT: one_line_summary, problem_it_solves, why_it_matters, architecture_overview, list items—tight and scannable.
+- deep_explanation: at most ~6–8 short lines (plain sentences). Technical, concrete, no essay.
+- full_narrative_explanation: supplementary context only—moderate length, not a bloated whitepaper. Still non-empty and substantive, but not the dominant output.
+- Arrays (core_features, key_flows, etc.): short bullets, each one concrete; avoid repetition and theory.
+
+PRODUCT INTELLIGENCE:
+- Must be derived ONLY from this project’s actual capabilities as shown in the analysis—categories, users, channels, monetization, etc. must map to what the code/repo actually does.
+- Do NOT propose unrelated SaaS ideas, generic side products, or "you could also build X" that is not an extension of this codebase.
 
 Required top-level keys (exact names, snake_case):
 project_name, project_intent, when_built, one_line_summary, deep_explanation, full_narrative_explanation
@@ -256,8 +288,6 @@ how_it_works_step_by_step, design_decisions, tradeoffs_and_limitations, example_
 how_to_run (string)
 important_files: array of objects with path, why_it_matters, confidence_notes, possible_gaps_or_uncertainties
 product_intelligence: object with category, target_users, use_cases, monetization_models, distribution_channels, product_stage, what_is_missing, strengths, risks (arrays where listed), and go_to_market: { target_user, sell_as, where_to_sell, first_steps }
-
-Ground claims in the provided files. If uncertain, say so in confidence_notes / possible_gaps_or_uncertainties.
 
 Return only the JSON object."#;
 

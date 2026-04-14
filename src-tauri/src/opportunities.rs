@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::claude::extract_json_text;
+use crate::claude::{extract_json_text, trim_json_string_values};
 
 //
 // ───────────────────────────────────────────────────────────
@@ -32,7 +32,7 @@ pub struct OpportunityPayload {
     pub opportunities: Vec<Opportunity>,
 }
 
-pub const OPPORTUNITY_SYSTEM_PROMPT: &str = r#"You are a pragmatic product strategist helping a solo builder turn an EXISTING codebase analysis into sellable opportunities. Year: 2026.
+pub const OPPORTUNITY_SYSTEM_PROMPT: &str = r#"You help a solo builder package an EXISTING project—not invent a new company. Year: 2026. Write like a builder making a decision, not like a consultant writing a report.
 
 STRICT OUTPUT RULES:
 - Output a SINGLE JSON object only. No text before or after it.
@@ -40,22 +40,45 @@ STRICT OUTPUT RULES:
 - Do NOT include markdown headings, bold, or lists outside JSON.
 
 INPUT:
-You will receive a JSON user message with key "existing_project_analysis" containing the stored analysis of a real project (features, stack, product intelligence, etc.). Treat that object as the only ground truth.
+The user message JSON includes "existing_project_analysis"—that object is the ONLY ground truth. Do not invent products, features, or systems that are not implied by that analysis.
 
-TASK:
-Produce exactly 3 to 5 opportunities. Each must be:
-- Grounded in that analysis (reference concrete capabilities, stack, or problems implied by the analysis—not generic "AI SaaS").
-- Narrow and specific: one clear buyer persona and one clear packaged offer per opportunity.
-- Realistic for 2026: name plausible channels, buyer titles, and validation steps someone could run in days or weeks—not fantasy VC-scale platforms.
-- Brutally honest: no hype, no "useful for many industries," no "platform for everyone."
-- If the underlying project is vague or weak, say so inside "why_this_could_fail" and/or sharpen into a niche—or explain what would make the opportunity stronger.
+WHAT COUNTS AS A VALID OPPORTUNITY:
+Each opportunity MUST be one of: (a) an extension of the existing project, (b) a repackaging of what it already does, or (c) a niche application of its existing functionality.
+- Do NOT invent unrelated tools or platforms.
+- Do NOT suggest ideas that require building a completely new system from scratch.
+- You are not brainstorming greenfield startups. You are packaging what already exists (or a thin extension of it).
 
-Each opportunity must include ALL of these string/array fields (snake_case keys at the opportunity level):
+HARD CONSTRAINTS:
+- Each opportunity MUST directly reuse or extend the existing project as described in the analysis.
+- If an idea cannot realistically be sold or seriously tested by a solo builder within 7 days (offer + outreach + demo), it is INVALID—discard it and replace with a tighter idea.
+- Choose ONE specific buyer per opportunity. If multiple audiences are possible, pick the single most realistic buyer and ignore the rest—no multi-audience or "many industries" language.
+
+LENGTH LIMITS (enforce strictly; short lines only):
+- title: short headline
+- what_it_is: at most 3 lines
+- problem: at most 2 lines
+- why_this_problem_is_real_now: at most 2 lines
+- target_customer: exactly 1 line, very specific (role + context)
+- who_exactly_to_contact: short—specific role/title and where to find them, not an essay
+- how_to_package: at most 2 lines
+- pricing_logic: at most 2 lines
+- distribution_strategy: array of SHORT strings (no long paragraphs; prefer 2–4 tight bullets total across the array, not a wall of text)
+- first_3_steps_to_validate: EXACTLY 3 strings—each a short bullet. Must be executable immediately: post, DM, demo, landing page, call, email a named type of prospect—NOT vague "research the market" or "validate demand" without a concrete action.
+- risk_level: short (e.g. low/medium/high + few words)
+- why_this_could_fail: at most 2 lines
+
+STYLE:
+- No generic startup fluff, no "AI SaaS for everyone," no broad platforms.
+- Brutally honest in why_this_could_fail.
+
+Each opportunity must include ALL of these fields (snake_case):
 title, what_it_is, problem, why_this_problem_is_real_now, target_customer, who_exactly_to_contact, how_to_package, pricing_logic,
-distribution_strategy (array of short strings),
-first_3_steps_to_validate (exactly 3 short strings: concrete next actions),
-risk_level (e.g. low/medium/high with a word of context),
+distribution_strategy (array of strings),
+first_3_steps_to_validate (exactly 3 strings),
+risk_level,
 why_this_could_fail
+
+Produce exactly 3 to 5 opportunities.
 
 Top-level JSON shape (required):
 {"opportunities":[{...}, ...]}
@@ -100,6 +123,8 @@ pub fn parse_and_validate_opportunities(json_str: &str) -> Result<OpportunityPay
     } else {
         return Err("Missing top-level \"opportunities\" array".into());
     }
+
+    trim_json_string_values(&mut v);
 
     let parsed: OpportunityPayload =
         serde_json::from_value(v).map_err(|e| format!("Opportunity schema error: {}", e))?;
