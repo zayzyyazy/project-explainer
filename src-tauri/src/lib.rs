@@ -5,6 +5,7 @@ use tauri::{Manager, State};
 
 mod claude;
 mod db;
+mod openai;
 mod scanner;
 
 use db::{InsertProject, ProjectDetail, ProjectRow};
@@ -46,6 +47,27 @@ fn anthropic_key() -> Result<String, String> {
 fn anthropic_model() -> String {
     std::env::var("ANTHROPIC_MODEL")
         .unwrap_or_else(|_| "claude-sonnet-4-6".to_string())
+        .trim()
+        .to_string()
+}
+
+fn ai_provider() -> String {
+    std::env::var("AI_PROVIDER")
+        .unwrap_or_else(|_| "anthropic".to_string())
+        .trim()
+        .to_lowercase()
+}
+
+fn openai_key() -> Result<String, String> {
+    let key = std::env::var("OPENAI_API_KEY").map_err(|_| {
+        "OPENAI_API_KEY is not set. Add it to src-tauri/.env when AI_PROVIDER=openai.".to_string()
+    })?;
+    Ok(key.trim().to_string())
+}
+
+fn openai_model() -> String {
+    std::env::var("OPENAI_MODEL")
+        .unwrap_or_else(|_| "gpt-4o-mini".to_string())
         .trim()
         .to_string()
 }
@@ -101,10 +123,18 @@ fn run_analysis_for_path(path_str: &str) -> Result<claude::AnalysisPayload, Stri
     let user_message =
         claude::build_user_message(&folder_name, &scan, &scan.detected_stack);
 
-    let api_key = anthropic_key()?;
-    let model = anthropic_model();
-
-    let raw = claude::call_claude(&api_key, &model, &user_message)?;
+    let raw = match ai_provider().as_str() {
+        "openai" => {
+            let api_key = openai_key()?;
+            let model = openai_model();
+            openai::call_openai(&api_key, &model, &user_message)?
+        }
+        _ => {
+            let api_key = anthropic_key()?;
+            let model = anthropic_model();
+            claude::call_claude(&api_key, &model, &user_message)?
+        }
+    };
 
     claude::parse_and_validate(&raw)
 }
@@ -209,8 +239,21 @@ fn reanalyze_project(state: State<'_, AppState>, id: i64) -> Result<ProjectDetai
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // 🔴 THIS IS THE IMPORTANT FIX
-    dotenvy::from_filename("src-tauri/.env").ok();
+    // 🔒 HARD ABSOLUTE PATH — always works regardless of how app is launched
+    let env_path = "/Users/zay/Desktop/Projects/project-explainer-os/src-tauri/.env";
+
+    // Load .env explicitly
+    if let Err(e) = dotenvy::from_path(env_path) {
+        println!("⚠️ Failed to load .env: {}", e);
+    } else {
+        println!("✅ .env loaded from {}", env_path);
+    }
+
+    // Debug: confirm key is actually available
+    match std::env::var("ANTHROPIC_API_KEY") {
+        Ok(_) => println!("✅ ANTHROPIC_API_KEY is set"),
+        Err(_) => println!("❌ ANTHROPIC_API_KEY is MISSING"),
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

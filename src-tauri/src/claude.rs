@@ -224,7 +224,7 @@ pub fn parse_and_validate(json_str: &str) -> Result<AnalysisPayload, String> {
 // ───────────────────────────────────────────────────────────
 //
 
-const ANALYSIS_SYSTEM_PROMPT: &str = r#"You are a senior engineer analyzing a codebase snapshot provided in the user message.
+pub const ANALYSIS_SYSTEM_PROMPT: &str = r#"You are a senior engineer analyzing a codebase snapshot provided in the user message.
 
 STRICT OUTPUT RULES:
 - Output a SINGLE JSON object only. No text before or after it.

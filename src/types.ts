@@ -15,7 +15,13 @@ export interface ProductIntelligence {
   what_is_missing: string[];
   strengths: string[];
   risks: string[];
-}
+go_to_market?: {
+  target_user: string;
+  sell_as: string;
+  where_to_sell: string[];
+  first_steps: string[];
+};
+};
 
 export interface AnalysisPayload {
   project_name: string;
