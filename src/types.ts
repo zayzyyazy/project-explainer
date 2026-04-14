@@ -24,6 +24,19 @@ export interface OpportunityPayload {
   opportunities: Opportunity[];
 }
 
+/** Client-winning case study (from stored analysis). */
+export interface CaseStudyPayload {
+  title: string;
+  problem: string;
+  solution: string;
+  outcome: string;
+  outcome_basis: string;
+  narrative: string;
+  linkedin_hook: string;
+  quote_ready_one_liner: string;
+  what_we_built: string[];
+}
+
 export interface ProductIntelligence {
   category: string;
   target_users: string[];

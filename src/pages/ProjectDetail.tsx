@@ -50,7 +50,7 @@ export default function ProjectDetail() {
     setError(null);
     try {
       await invoke("delete_project", { id: Number(id) });
-      navigate("/");
+      navigate("/dashboard");
     } catch (e) {
       setError(String(e));
     } finally {
@@ -91,7 +91,7 @@ export default function ProjectDetail() {
       <div>
         {error && <div className="error-banner">{error}</div>}
         <p>Project not found.</p>
-        <Link to="/">← Back</Link>
+        <Link to="/dashboard">← Back</Link>
       </div>
     );
   }
@@ -103,7 +103,7 @@ export default function ProjectDetail() {
       {error && <div className="error-banner">{error}</div>}
 
       <p>
-        <Link to="/">← Dashboard</Link>
+        <Link to="/dashboard">← Dashboard</Link>
       </p>
 
       <h2>{a?.project_name ?? project.name}</h2>

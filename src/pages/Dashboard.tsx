@@ -68,6 +68,9 @@ export default function Dashboard() {
           marginBottom: "1.25rem",
         }}
       >
+        <Link to="/" className="btn">
+          Home
+        </Link>
         <button
           type="button"
           className="btn btn-primary"
@@ -76,6 +79,9 @@ export default function Dashboard() {
         >
           {busy ? "Importing…" : "Import Project"}
         </button>
+        <Link to="/case-study" className="btn">
+          Case Study
+        </Link>
         <Link to="/opportunities" className="btn">
           Opportunities dashboard
         </Link>

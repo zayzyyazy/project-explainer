@@ -97,7 +97,7 @@ export default function Opportunities() {
   return (
     <div>
       <p>
-        <Link to="/">← Dashboard</Link>
+        <Link to="/dashboard">← Dashboard</Link>
       </p>
 
       <h2>Opportunities Dashboard</h2>

@@ -3,6 +3,7 @@ use std::sync::Mutex;
 
 use tauri::{Manager, State};
 
+mod case_study;
 mod claude;
 mod db;
 mod openai;
@@ -10,6 +11,7 @@ mod opportunities;
 mod scanner;
 
 use db::{InsertProject, IdeaProject, ProjectDetail, ProjectRow, SaveIdeaProjectInput};
+use case_study::CaseStudyPayload;
 use opportunities::OpportunityPayload;
 
 struct AppState {
@@ -200,6 +202,37 @@ fn run_generate_opportunities_from_analysis(
     opportunities::parse_and_validate_opportunities(&raw)
 }
 
+fn run_generate_case_study_from_analysis(
+    analysis: &serde_json::Value,
+) -> Result<CaseStudyPayload, String> {
+    let user_message = case_study::build_case_study_user_message(analysis);
+
+    let raw = match ai_provider().as_str() {
+        "openai" => {
+            let api_key = openai_key()?;
+            let model = openai_model();
+            openai::call_openai_with_system(
+                &api_key,
+                &model,
+                case_study::CASE_STUDY_SYSTEM_PROMPT,
+                &user_message,
+            )?
+        }
+        _ => {
+            let api_key = anthropic_key()?;
+            let model = anthropic_model();
+            claude::call_claude_with_system(
+                &api_key,
+                &model,
+                case_study::CASE_STUDY_SYSTEM_PROMPT,
+                &user_message,
+            )?
+        }
+    };
+
+    case_study::parse_and_validate_case_study(&raw)
+}
+
 //
 // ───────────────────────────────────────────────────────────
 // V2 — OPPORTUNITIES
@@ -223,6 +256,22 @@ fn generate_opportunities(
     drop(conn);
 
     run_generate_opportunities_from_analysis(&analysis)
+}
+
+#[tauri::command]
+fn generate_case_study(state: State<'_, AppState>, id: i64) -> Result<CaseStudyPayload, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+
+    let detail = db::get_project_by_id(&conn, id)?
+        .ok_or_else(|| "Project not found".to_string())?;
+
+    let analysis = detail.analysis.ok_or_else(|| {
+        "No stored analysis for this project. Complete analysis first, then try again.".to_string()
+    })?;
+
+    drop(conn);
+
+    run_generate_case_study_from_analysis(&analysis)
 }
 
 //
@@ -352,6 +401,7 @@ pub fn run() {
             list_idea_projects,
             get_idea_project,
             delete_idea_project,
+            generate_case_study,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run app");

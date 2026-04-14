@@ -41,7 +41,7 @@ export default function IdeaProjects() {
   return (
     <div>
       <p>
-        <Link to="/">← Dashboard</Link>
+        <Link to="/dashboard">← Dashboard</Link>
         {" · "}
         <Link to="/opportunities">Opportunities</Link>
       </p>
