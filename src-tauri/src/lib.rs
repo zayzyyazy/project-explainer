@@ -6,6 +6,7 @@ use tauri::{Manager, State};
 mod case_study;
 mod claude;
 mod db;
+mod living;
 mod openai;
 mod opportunities;
 mod scanner;
@@ -14,6 +15,9 @@ use db::{
     InsertProject, IdeaProject, ProjectDetail, ProjectRow, SaveIdeaProjectInput, UserProfile,
 };
 use case_study::CaseStudyPayload;
+use living::{
+    EvolutionSuggestionsPayload, IncrementalUpdateResult, PositioningPayload, TopProjectsPayload,
+};
 use opportunities::OpportunityPayload;
 
 struct AppState {
@@ -77,6 +81,24 @@ fn openai_model() -> String {
         .unwrap_or_else(|_| "gpt-4o-mini".to_string())
         .trim()
         .to_string()
+}
+
+pub(crate) fn complete_ai_with_system(
+    system_prompt: &str,
+    user_message: &str,
+) -> Result<String, String> {
+    match ai_provider().as_str() {
+        "openai" => {
+            let api_key = openai_key()?;
+            let model = openai_model();
+            openai::call_openai_with_system(&api_key, &model, system_prompt, user_message)
+        }
+        _ => {
+            let api_key = anthropic_key()?;
+            let model = anthropic_model();
+            claude::call_claude_with_system(&api_key, &model, system_prompt, user_message)
+        }
+    }
 }
 
 //
@@ -293,6 +315,128 @@ fn generate_case_study(state: State<'_, AppState>, id: i64) -> Result<CaseStudyP
 
 //
 // ───────────────────────────────────────────────────────────
+// LIVING SYSTEM — rank, incremental update, insights
+// ───────────────────────────────────────────────────────────
+//
+
+#[tauri::command]
+fn rank_top_projects(state: State<'_, AppState>) -> Result<TopProjectsPayload, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let rows = db::list_projects(&conn)?;
+    let profile = db::get_user_profile(&conn)?;
+
+    let mut summaries = Vec::new();
+    let mut allowed_ids = Vec::new();
+
+    for r in rows {
+        if r.last_analyzed_at.is_none() {
+            continue;
+        }
+        if let Some(a) = db::get_latest_analysis_json(&conn, r.id)? {
+            allowed_ids.push(r.id);
+            summaries.push(living::compact_project_for_ranking(r.id, &r.name, &a));
+        }
+    }
+
+    drop(conn);
+
+    if summaries.is_empty() {
+        return Err("No analyzed projects yet. Import and analyze at least one project.".into());
+    }
+
+    let user = living::build_rank_user_message(&summaries, profile.as_ref());
+    let raw = complete_ai_with_system(living::RANK_PROJECTS_PROMPT, &user)?;
+    living::parse_top_projects(&raw, &allowed_ids)
+}
+
+#[tauri::command]
+fn incremental_project_update(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<IncrementalUpdateResult, String> {
+    let path = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::get_project_path(&conn, id)?
+            .ok_or_else(|| "Project not found".to_string())?
+    };
+
+    let root = Path::new(&path);
+    let canonical = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let scan = scanner::scan_project(&canonical)?;
+
+    if scan.selected_files.is_empty() {
+        return Err("No readable source files found for update scan.".into());
+    }
+
+    let folder_name = canonical
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("project")
+        .to_string();
+
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let analysis = db::get_latest_analysis_json(&conn, id)?
+        .ok_or_else(|| "No stored analysis. Run full analyze first.".to_string())?;
+    drop(conn);
+
+    let user_msg = living::build_incremental_scan_message(&analysis, &folder_name, &scan);
+    let raw = complete_ai_with_system(living::INCREMENTAL_UPDATE_PROMPT, &user_msg)?;
+    let payload = living::parse_incremental_update(&raw)?;
+
+    let summary = format!(
+        "{}\n\nImprovements: {}",
+        payload.what_changed_overview,
+        payload.improvements.join("; ")
+    );
+
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let eid = db::insert_project_evolution(
+        &conn,
+        id,
+        &payload.version_label,
+        &payload.new_features,
+        &summary,
+    )?;
+    drop(conn);
+
+    Ok(IncrementalUpdateResult {
+        evolution_id: eid,
+        payload,
+    })
+}
+
+#[tauri::command]
+fn suggest_evolution_steps(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<EvolutionSuggestionsPayload, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let analysis = db::get_latest_analysis_json(&conn, id)?
+        .ok_or_else(|| "No stored analysis for this project.".to_string())?;
+    drop(conn);
+
+    let user = serde_json::json!({ "project_analysis": analysis }).to_string();
+    let raw = complete_ai_with_system(living::EVOLUTION_SUGGEST_PROMPT, &user)?;
+    living::parse_evolution_suggestions(&raw)
+}
+
+#[tauri::command]
+fn get_positioning_clarity(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<PositioningPayload, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let analysis = db::get_latest_analysis_json(&conn, id)?
+        .ok_or_else(|| "No stored analysis for this project.".to_string())?;
+    drop(conn);
+
+    let user = serde_json::json!({ "project_analysis": analysis }).to_string();
+    let raw = complete_ai_with_system(living::POSITIONING_PROMPT, &user)?;
+    living::parse_positioning(&raw)
+}
+
+//
+// ───────────────────────────────────────────────────────────
 // IMPORT
 // ───────────────────────────────────────────────────────────
 //
@@ -421,6 +565,10 @@ pub fn run() {
             generate_case_study,
             get_user_profile,
             save_user_profile,
+            rank_top_projects,
+            incremental_project_update,
+            suggest_evolution_steps,
+            get_positioning_clarity,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run app");

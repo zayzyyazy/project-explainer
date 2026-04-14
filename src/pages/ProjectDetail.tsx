@@ -2,7 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
-import type { ProjectDetail as PD } from "../types";
+import type {
+  EvolutionSuggestionsPayload,
+  IncrementalUpdateResult,
+  PositioningPayload,
+  ProjectDetail as PD,
+} from "../types";
 
 export default function ProjectDetail() {
   const { id } = useParams();
@@ -11,6 +16,11 @@ export default function ProjectDetail() {
   const [project, setProject] = useState<PD | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [positioning, setPositioning] = useState<PositioningPayload | null>(null);
+  const [evolutionIdeas, setEvolutionIdeas] =
+    useState<EvolutionSuggestionsPayload | null>(null);
+  const [insightError, setInsightError] = useState<string | null>(null);
+  const [updateMsg, setUpdateMsg] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -28,6 +38,13 @@ export default function ProjectDetail() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    setPositioning(null);
+    setEvolutionIdeas(null);
+    setInsightError(null);
+    setUpdateMsg(null);
+  }, [id]);
 
   async function onReanalyze() {
     if (!id) return;
@@ -53,6 +70,58 @@ export default function ProjectDetail() {
       navigate("/dashboard");
     } catch (e) {
       setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onIncrementalUpdate() {
+    if (!id) return;
+    setBusy(true);
+    setInsightError(null);
+    setUpdateMsg(null);
+    try {
+      const res = await invoke<IncrementalUpdateResult>("incremental_project_update", {
+        id: Number(id),
+      });
+      setUpdateMsg(
+        `Recorded: ${res.payload.version_label} — ${res.payload.what_changed_overview.slice(0, 120)}…`
+      );
+      await load();
+    } catch (e) {
+      setInsightError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onLoadPositioning() {
+    if (!id) return;
+    setBusy(true);
+    setInsightError(null);
+    try {
+      const p = await invoke<PositioningPayload>("get_positioning_clarity", {
+        id: Number(id),
+      });
+      setPositioning(p);
+    } catch (e) {
+      setInsightError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onLoadEvolutionSuggestions() {
+    if (!id) return;
+    setBusy(true);
+    setInsightError(null);
+    try {
+      const p = await invoke<EvolutionSuggestionsPayload>("suggest_evolution_steps", {
+        id: Number(id),
+      });
+      setEvolutionIdeas(p);
+    } catch (e) {
+      setInsightError(String(e));
     } finally {
       setBusy(false);
     }
@@ -122,6 +191,14 @@ export default function ProjectDetail() {
         <button onClick={onReanalyze} disabled={busy}>
           {busy ? "Working…" : "Re-analyze"}
         </button>
+        <button
+          type="button"
+          onClick={() => void onIncrementalUpdate()}
+          disabled={busy || !a}
+          title="Scan folder vs last analysis — append update without full rewrite"
+        >
+          Record update
+        </button>
         <button onClick={onDelete} disabled={busy}>
           Delete
         </button>
@@ -129,6 +206,95 @@ export default function ProjectDetail() {
           Export Markdown
         </button>
       </div>
+
+      {updateMsg && <p className="muted">{updateMsg}</p>}
+      {insightError && (
+        <div className="error-banner" style={{ marginTop: "0.75rem" }}>
+          {insightError}
+        </div>
+      )}
+
+      {a && (
+        <section className="living-panel card" style={{ marginTop: "1rem" }}>
+          <h3 className="living-panel-title">Living system</h3>
+          <p className="meta" style={{ marginTop: 0 }}>
+            Positioning anchor and next upgrades use your stored analysis. Record
+            update rescans the folder and appends changes to the timeline below.
+          </p>
+          <div className="living-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy}
+              onClick={() => void onLoadPositioning()}
+            >
+              Positioning clarity
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              onClick={() => void onLoadEvolutionSuggestions()}
+            >
+              Next upgrades (2–3)
+            </button>
+          </div>
+
+          {positioning && (
+            <div className="living-card">
+              <h4>Positioning anchor</h4>
+              <p>
+                <strong>Category:</strong> {positioning.category}
+              </p>
+              <p>
+                <strong>Primary audience:</strong> {positioning.primary_audience}
+              </p>
+              <p className="positioning-anchor">{positioning.one_sentence_anchor}</p>
+            </div>
+          )}
+
+          {evolutionIdeas && (
+            <div className="living-card">
+              <h4>Suggested next steps</h4>
+              <ul className="evolution-suggest-list">
+                {evolutionIdeas.suggestions.map((s, i) => (
+                  <li key={i}>
+                    <strong>{s.title}</strong>
+                    <p className="meta">{s.why}</p>
+                    <p className="meta">{s.build_notes}</p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
+      )}
+
+      {(project.evolutions ?? []).length > 0 && (
+        <section className="detail-section">
+          <h3>Update timeline</h3>
+          <p className="meta">
+            Incremental scans — new features and changes appended over time (full
+            analysis unchanged).
+          </p>
+          <ul className="evolution-timeline">
+            {(project.evolutions ?? []).map((ev) => (
+              <li key={ev.id} className="card evolution-entry">
+                <strong>{ev.label}</strong>
+                <span className="meta"> · {new Date(ev.created_at).toLocaleString()}</span>
+                <ul className="op-list">
+                  {ev.new_features.map((f, i) => (
+                    <li key={i}>{f}</li>
+                  ))}
+                </ul>
+                <p className="op-body" style={{ marginTop: "0.5rem" }}>
+                  {ev.summary}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {!a && (
         <p className="muted">

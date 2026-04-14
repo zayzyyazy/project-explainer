@@ -15,12 +15,23 @@ pub struct ProjectRow {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ProjectEvolutionEntry {
+    pub id: i64,
+    pub label: String,
+    pub new_features: Vec<String>,
+    pub summary: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ProjectDetail {
     #[serde(flatten)]
     pub row: ProjectRow,
     pub analysis: Option<serde_json::Value>,
     pub file_index_sample: Vec<String>,
     pub raw_file_list_truncated: bool,
+    #[serde(default)]
+    pub evolutions: Vec<ProjectEvolutionEntry>,
 }
 
 pub fn open_db(db_path: &Path) -> Result<Connection, String> {
@@ -88,6 +99,16 @@ fn migrate(conn: &Connection) -> Result<(), String> {
                 app_goal TEXT,
                 updated_at TEXT NOT NULL DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS project_evolutions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                label TEXT NOT NULL,
+                new_features_json TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_evolutions_project ON project_evolutions(project_id);
             "#,
         )
         .map_err(|e| e.to_string())?;
@@ -137,6 +158,22 @@ pub fn save_user_profile(conn: &Connection, p: &UserProfile) -> Result<(), Strin
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Latest stored analysis JSON only (no evolutions) — for ranking / light reads.
+pub fn get_latest_analysis_json(
+    conn: &Connection,
+    project_id: i64,
+) -> Result<Option<serde_json::Value>, String> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT raw_json FROM analyses WHERE project_id = ?1 ORDER BY datetime(created_at) DESC LIMIT 1",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(raw.and_then(|s| serde_json::from_str(&s).ok()))
 }
 
 pub fn list_projects(conn: &Connection) -> Result<Vec<ProjectRow>, String> {
@@ -221,12 +258,57 @@ pub fn get_project_by_id(conn: &Connection, id: i64) -> Result<Option<ProjectDet
         }
     }
 
+    let evolutions = list_project_evolutions(conn, id)?;
+
     Ok(Some(ProjectDetail {
         row: base,
         analysis,
         file_index_sample,
         raw_file_list_truncated,
+        evolutions,
     }))
+}
+
+pub fn list_project_evolutions(
+    conn: &Connection,
+    project_id: i64,
+) -> Result<Vec<ProjectEvolutionEntry>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, label, new_features_json, summary, created_at FROM project_evolutions WHERE project_id = ?1 ORDER BY datetime(created_at) ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![project_id], |row| {
+            let nf: String = row.get(2)?;
+            let feats: Vec<String> = serde_json::from_str(&nf).unwrap_or_default();
+            Ok(ProjectEvolutionEntry {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                new_features: feats,
+                summary: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+pub fn insert_project_evolution(
+    conn: &Connection,
+    project_id: i64,
+    label: &str,
+    new_features: &[String],
+    summary: &str,
+) -> Result<i64, String> {
+    let now = Utc::now().to_rfc3339();
+    let nf = serde_json::to_string(new_features).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO project_evolutions (project_id, label, new_features_json, summary, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![project_id, label, nf, summary, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
 }
 
 pub fn path_exists(conn: &Connection, path: &str) -> Result<bool, String> {

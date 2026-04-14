@@ -2,13 +2,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { ProjectListItem } from "../types";
+import type { ProjectListItem, TopProjectsPayload } from "../types";
 
 export default function Dashboard() {
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [topPicks, setTopPicks] = useState<TopProjectsPayload | null>(null);
+  const [rankBusy, setRankBusy] = useState(false);
+  const [rankError, setRankError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -23,6 +26,25 @@ export default function Dashboard() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const refreshTopPicks = useCallback(async () => {
+    setRankError(null);
+    setRankBusy(true);
+    try {
+      const r = await invoke<TopProjectsPayload>("rank_top_projects");
+      setTopPicks(r);
+    } catch (e) {
+      setRankError(String(e));
+      setTopPicks(null);
+    } finally {
+      setRankBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const analyzed = projects.filter((p) => p.last_analyzed_at);
+    if (analyzed.length > 0) void refreshTopPicks();
+  }, [projects, refreshTopPicks]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -59,6 +81,52 @@ export default function Dashboard() {
   return (
     <div>
       {error && <div className="error-banner">{error}</div>}
+
+      <section className="top-picks-section card" style={{ marginBottom: "1.25rem" }}>
+        <div className="top-picks-head">
+          <h2 style={{ margin: "0 0 0.35rem", fontSize: "1.05rem" }}>
+            Top picks for your goal
+          </h2>
+          <button
+            type="button"
+            className="btn"
+            disabled={rankBusy}
+            onClick={() => void refreshTopPicks()}
+          >
+            {rankBusy ? "Refreshing…" : "Refresh ranking"}
+          </button>
+        </div>
+        <p className="meta" style={{ marginTop: 0 }}>
+          AI picks up to 3 analyzed projects that best fit your profile goal
+          (e.g. client work → easiest to explain and sell).
+        </p>
+        {rankError && (
+          <p className="muted" style={{ color: "#e8a0a0" }}>
+            {rankError}
+          </p>
+        )}
+        {topPicks && topPicks.picks.length > 0 ? (
+          <ul className="top-picks-list">
+            {topPicks.picks.map((p, i) => (
+              <li key={p.project_id}>
+                <Link to={`/project/${p.project_id}`}>
+                  <strong>
+                    #{i + 1} {p.project_name}
+                  </strong>
+                </Link>
+                <p className="meta" style={{ margin: "0.25rem 0 0" }}>
+                  {p.rationale}
+                </p>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          !rankError &&
+          !rankBusy && (
+            <p className="muted">No ranking yet — analyze a project first.</p>
+          )
+        )}
+      </section>
       <div
         style={{
           display: "flex",

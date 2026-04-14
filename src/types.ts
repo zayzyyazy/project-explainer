@@ -114,10 +114,58 @@ export interface ProjectListItem {
   created_at: string;
 }
 
+export interface ProjectEvolutionEntry {
+  id: number;
+  label: string;
+  new_features: string[];
+  summary: string;
+  created_at: string;
+}
+
 export interface ProjectDetail extends ProjectListItem {
   analysis: AnalysisPayload | null;
   file_index_sample: string[];
   raw_file_list_truncated: boolean;
+  evolutions?: ProjectEvolutionEntry[];
+}
+
+/** AI-ranked projects for your current goal */
+export interface RankedPick {
+  project_id: number;
+  project_name: string;
+  rationale: string;
+}
+
+export interface TopProjectsPayload {
+  picks: RankedPick[];
+}
+
+export interface IncrementalUpdatePayload {
+  version_label: string;
+  what_changed_overview: string;
+  new_features: string[];
+  improvements: string[];
+}
+
+export interface IncrementalUpdateResult {
+  evolution_id: number;
+  payload: IncrementalUpdatePayload;
+}
+
+export interface EvolutionSuggestion {
+  title: string;
+  why: string;
+  build_notes: string;
+}
+
+export interface EvolutionSuggestionsPayload {
+  suggestions: EvolutionSuggestion[];
+}
+
+export interface PositioningPayload {
+  category: string;
+  primary_audience: string;
+  one_sentence_anchor: string;
 }
 
 /** Alias: matches Rust `ProjectRow` from `list_projects`. */
