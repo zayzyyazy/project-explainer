@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { ProjectListItem, TopProjectsPayload } from "../types";
+import type { ProjectListItem, RuntimeStatus, TopProjectsPayload } from "../types";
 
 const ProjectCard = memo(function ProjectCard({ p }: { p: ProjectListItem }) {
   return (
@@ -29,6 +29,7 @@ export default function Dashboard() {
   const [topPicks, setTopPicks] = useState<TopProjectsPayload | null>(null);
   const [rankBusy, setRankBusy] = useState(false);
   const [rankError, setRankError] = useState<string | null>(null);
+  const [status, setStatus] = useState<RuntimeStatus | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -43,6 +44,17 @@ export default function Dashboard() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const s = await invoke<RuntimeStatus>("get_runtime_status");
+        setStatus(s);
+      } catch {
+        setStatus(null);
+      }
+    })();
+  }, []);
 
   const refreshTopPicks = useCallback(async () => {
     setRankError(null);
@@ -91,6 +103,23 @@ export default function Dashboard() {
   return (
     <div>
       {error && <div className="error-banner">{error}</div>}
+      {status && !status.hasApiKey && (
+        <div className="error-banner">
+          Missing API key. Add it before analysis/generation. You can still browse local projects.
+        </div>
+      )}
+      {status && !status.hasProfile && (
+        <p className="muted" style={{ marginBottom: "0.75rem" }}>
+          Tip: set your profile in Setup for better tone.
+        </p>
+      )}
+
+      <section className="card" style={{ marginBottom: "1rem" }}>
+        <strong>Quick stats</strong>
+        <p className="meta" style={{ marginTop: "0.5rem" }}>
+          Projects: {projects.length} · Analyzed: {projects.filter((p) => !!p.last_analyzed_at).length}
+        </p>
+      </section>
 
       <section className="top-picks-section card" style={{ marginBottom: "1.25rem" }}>
         <div className="top-picks-head">

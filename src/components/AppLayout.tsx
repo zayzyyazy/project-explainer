@@ -42,11 +42,13 @@ export default function AppLayout() {
           </Link>
 
           <nav className="top-nav">
-            <Link to="/dashboard">Dashboard</Link>
+            <Link to="/dashboard">Projects</Link>
             <Link to="/setup">Profile</Link>
-            <Link to="/case-study">Case Study</Link>
             <Link to="/opportunities">Opportunities</Link>
-            <Link to="/idea-projects">Idea Projects</Link>
+            <Link to="/idea-projects">Ideas</Link>
+            <a href="https://example.com/feedback" target="_blank" rel="noreferrer">
+              Feedback
+            </a>
           </nav>
         </div>
 
@@ -71,6 +73,9 @@ export default function AppLayout() {
       <main>
         <Outlet />
       </main>
+      <footer className="meta" style={{ marginTop: "1rem", opacity: 0.9 }}>
+        v0.9.0 beta · Data stays local. Only sent to Claude/OpenAI API for generation.
+      </footer>
     </div>
   );
 }

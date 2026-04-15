@@ -187,6 +187,23 @@ export interface PositioningPayload {
   one_sentence_anchor: string;
 }
 
+export interface RuntimeStatus {
+  hasApiKey: boolean;
+  hasProfile: boolean;
+}
+
+export interface ProjectImportancePayload {
+  top_insights: string[];
+}
+
+export interface LinkedinResult {
+  text: string;
+}
+
+export interface ExportBundleResult {
+  writtenFiles: string[];
+}
+
 /** Persisted “Idea Project” (saved opportunity). */
 export interface IdeaProject {
   id: number;

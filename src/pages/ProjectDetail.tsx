@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { save } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
   EvolutionSuggestionsPayload,
+  ExportBundleResult,
   IncrementalUpdateResult,
+  LinkedinResult,
   PositioningPayload,
+  ProjectImportancePayload,
   ProjectDetail as PD,
 } from "../types";
 
 /** Avoid re-fetching `get_project` when revisiting the same id in one app session. */
 const projectDetailSessionCache = new Map<number, PD>();
 
-const NARRATIVE_PREVIEW_CHARS = 1200;
+const NARRATIVE_PREVIEW_CHARS = 150;
 
 export default function ProjectDetail() {
   const { id } = useParams();
@@ -27,6 +30,17 @@ export default function ProjectDetail() {
   const [insightError, setInsightError] = useState<string | null>(null);
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const [narrativeExpanded, setNarrativeExpanded] = useState(false);
+  const [importance, setImportance] = useState<ProjectImportancePayload | null>(null);
+  const [linkedinText, setLinkedinText] = useState<string>("");
+  const [linkedinLength, setLinkedinLength] = useState<"short" | "long">("short");
+  const [linkedinFocus, setLinkedinFocus] = useState<
+    "describe_tool" | "describe_stack" | "describe_problem" | "describe_outcome"
+  >("describe_outcome");
+  const [collapsed, setCollapsed] = useState({
+    intelligence: true,
+    narrative: true,
+    details: true,
+  });
 
   const load = useCallback(async (force = false) => {
     if (!id) return;
@@ -56,8 +70,22 @@ export default function ProjectDetail() {
     setInsightError(null);
     setUpdateMsg(null);
     setNarrativeExpanded(false);
+    setImportance(null);
+    setLinkedinText("");
+    setCollapsed({ intelligence: true, narrative: true, details: true });
     setProject(null);
     void load(false);
+    void (async () => {
+      if (!id) return;
+      try {
+        const payload = await invoke<ProjectImportancePayload>("get_project_importance", {
+          id: Number(id),
+        });
+        setImportance(payload);
+      } catch {
+        setImportance(null);
+      }
+    })();
   }, [id, load]);
 
   async function onReanalyze() {
@@ -171,6 +199,48 @@ export default function ProjectDetail() {
     }
   }
 
+  async function onGenerateLinkedin() {
+    if (!id) return;
+    setBusy(true);
+    setInsightError(null);
+    try {
+      const res = await invoke<LinkedinResult>("generate_linkedin_post", {
+        id: Number(id),
+        length: linkedinLength,
+        focus: linkedinFocus,
+      });
+      setLinkedinText(res.text);
+    } catch (e) {
+      setInsightError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onExportBundle() {
+    if (!id) return;
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "Choose export folder",
+    });
+    if (!selected || Array.isArray(selected)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await invoke<ExportBundleResult>("export_project_bundle", {
+        id: Number(id),
+        outputDir: selected,
+        includeOpportunities: true,
+      });
+      setUpdateMsg(`Exported: ${res.writtenFiles.join(", ")}`);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const narrativePreview = useMemo(() => {
     const text = project?.analysis?.full_narrative_explanation;
     if (!text) return null;
@@ -222,13 +292,16 @@ export default function ProjectDetail() {
           disabled={busy || !a}
           title="Scan folder vs last analysis — append update without full rewrite"
         >
-          Record update
+          Update Project
         </button>
         <button onClick={onDelete} disabled={busy}>
           Delete
         </button>
         <button onClick={onExportMd} disabled={busy || !a}>
           Export Markdown
+        </button>
+        <button onClick={() => void onExportBundle()} disabled={busy || !a}>
+          Export Project
         </button>
       </div>
 
@@ -238,6 +311,48 @@ export default function ProjectDetail() {
           {insightError}
         </div>
       )}
+
+      {importance?.top_insights?.length ? (
+        <section className="card" style={{ marginTop: "0.75rem" }}>
+          <h3 style={{ marginTop: 0 }}>Top 3 insights</h3>
+          <ul className="op-list">
+            {importance.top_insights.map((x, i) => (
+              <li key={i}>{x}</li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      <section className="card" style={{ marginTop: "0.75rem" }}>
+        <h3 style={{ marginTop: 0 }}>LinkedIn post generator</h3>
+        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+          <select value={linkedinLength} onChange={(e) => setLinkedinLength(e.target.value as "short" | "long")}>
+            <option value="short">Short (2-3 lines)</option>
+            <option value="long">Long (5-8 lines)</option>
+          </select>
+          <select
+            value={linkedinFocus}
+            onChange={(e) =>
+              setLinkedinFocus(
+                e.target.value as
+                  | "describe_tool"
+                  | "describe_stack"
+                  | "describe_problem"
+                  | "describe_outcome"
+              )
+            }
+          >
+            <option value="describe_tool">Describe tool</option>
+            <option value="describe_stack">Describe stack</option>
+            <option value="describe_problem">Describe problem</option>
+            <option value="describe_outcome">Describe outcome</option>
+          </select>
+          <button type="button" className="btn btn-primary" disabled={busy || !a} onClick={() => void onGenerateLinkedin()}>
+            Generate
+          </button>
+        </div>
+        {linkedinText ? <pre className="proof-body" style={{ marginTop: "0.75rem" }}>{linkedinText}</pre> : null}
+      </section>
 
       {a && (
         <section className="living-panel card" style={{ marginTop: "1rem" }}>
@@ -329,8 +444,24 @@ export default function ProjectDetail() {
 
       {a && (
         <>
+          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginTop: "0.75rem" }}>
+            <button
+              className="btn"
+              type="button"
+              onClick={() => setCollapsed((c) => ({ ...c, intelligence: !c.intelligence }))}
+            >
+              {collapsed.intelligence ? "Show product intelligence" : "Hide product intelligence"}
+            </button>
+            <button
+              className="btn"
+              type="button"
+              onClick={() => setCollapsed((c) => ({ ...c, details: !c.details }))}
+            >
+              {collapsed.details ? "Show analysis details" : "Hide analysis details"}
+            </button>
+          </div>
           {/* 🔥 PRODUCT INTELLIGENCE */}
-          {a.product_intelligence && (
+          {!collapsed.intelligence && a.product_intelligence && (
             <div className="product-intelligence-card">
               <h3>Product Intelligence</h3>
 
@@ -339,42 +470,42 @@ export default function ProjectDetail() {
 
               <h4>Target Users</h4>
               <ul>
-                {a.product_intelligence.target_users?.map((x, i) => (
+                {a.product_intelligence.target_users?.slice(0, 3).map((x, i) => (
                   <li key={i}>{x}</li>
                 ))}
               </ul>
 
               <h4>Use Cases</h4>
               <ul>
-                {a.product_intelligence.use_cases?.map((x, i) => (
+                {a.product_intelligence.use_cases?.slice(0, 3).map((x, i) => (
                   <li key={i}>{x}</li>
                 ))}
               </ul>
 
               <h4>Monetization</h4>
               <ul>
-                {a.product_intelligence.monetization_models?.map((x, i) => (
+                {a.product_intelligence.monetization_models?.slice(0, 3).map((x, i) => (
                   <li key={i}>{x}</li>
                 ))}
               </ul>
 
               <h4>Strengths</h4>
               <ul>
-                {a.product_intelligence.strengths?.map((x, i) => (
+                {a.product_intelligence.strengths?.slice(0, 3).map((x, i) => (
                   <li key={i}>{x}</li>
                 ))}
               </ul>
 
               <h4>Risks</h4>
               <ul>
-                {a.product_intelligence.risks?.map((x, i) => (
+                {a.product_intelligence.risks?.slice(0, 3).map((x, i) => (
                   <li key={i}>{x}</li>
                 ))}
               </ul>
 
               <h4>What's Missing</h4>
               <ul>
-                {a.product_intelligence.what_is_missing?.map((x, i) => (
+                {a.product_intelligence.what_is_missing?.slice(0, 3).map((x, i) => (
                   <li key={i}>{x}</li>
                 ))}
               </ul>
@@ -388,14 +519,14 @@ export default function ProjectDetail() {
 
                   <h5>Where to sell</h5>
                   <ul>
-                    {a.product_intelligence.go_to_market.where_to_sell?.map((x, i) => (
+                    {a.product_intelligence.go_to_market.where_to_sell?.slice(0, 3).map((x, i) => (
                       <li key={i}>{x}</li>
                     ))}
                   </ul>
 
                   <h5>First steps</h5>
                   <ul>
-                    {a.product_intelligence.go_to_market.first_steps?.map((x, i) => (
+                    {a.product_intelligence.go_to_market.first_steps?.slice(0, 3).map((x, i) => (
                       <li key={i}>{x}</li>
                     ))}
                   </ul>
@@ -405,6 +536,8 @@ export default function ProjectDetail() {
           )}
 
           {/* NORMAL SECTIONS */}
+          {!collapsed.details && (
+          <>
           <section>
             <h3>Summary</h3>
             <p>{a.one_line_summary}</p>
@@ -439,6 +572,8 @@ export default function ProjectDetail() {
                 </button>
               ) : null}
             </section>
+          )}
+          </>
           )}
         </>
       )}

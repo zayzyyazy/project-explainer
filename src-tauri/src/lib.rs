@@ -46,6 +46,47 @@ struct AppState {
     db: Mutex<rusqlite::Connection>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeStatus {
+    has_api_key: bool,
+    has_profile: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+struct ProjectImportancePayload {
+    top_insights: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LinkedinArgs {
+    id: i64,
+    length: String,
+    focus: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LinkedinResult {
+    text: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportProjectArgs {
+    id: i64,
+    output_dir: String,
+    include_opportunities: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportBundleResult {
+    written_files: Vec<String>,
+}
+
 fn app_db_dir() -> Result<std::path::PathBuf, String> {
     let mut dir =
         dirs::data_local_dir().ok_or_else(|| "Could not resolve local data directory".to_string())?;
@@ -120,6 +161,117 @@ pub(crate) fn complete_ai_with_system(
             let model = anthropic_model();
             claude::call_claude_with_system(&api_key, &model, system_prompt, user_message)
         }
+    }
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect::<String>().trim().to_string()
+}
+
+fn clean_line(s: &str) -> String {
+    let banned = ["robust", "leveraged", "seamless", "powerful"];
+    let mut out = s.trim().to_string();
+    for b in banned {
+        out = out.replace(b, "");
+        out = out.replace(&b.to_uppercase(), "");
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn top_insights_from_analysis(a: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(s) = a.get("one_line_summary").and_then(|x| x.as_str()) {
+        out.push(format!("Summary: {}", truncate_chars(&clean_line(s), 150)));
+    }
+    if let Some(f) = a
+        .get("core_features")
+        .and_then(|x| x.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|x| x.as_str())
+    {
+        out.push(format!("Feature: {}", truncate_chars(&clean_line(f), 150)));
+    }
+    if let Some(u) = a.get("problem_it_solves").and_then(|x| x.as_str()) {
+        out.push(format!("Use case: {}", truncate_chars(&clean_line(u), 150)));
+    }
+    if out.is_empty() {
+        out.push("Summary: Analysis available.".to_string());
+    }
+    out.truncate(3);
+    out
+}
+
+fn build_linkedin_text(a: &serde_json::Value, length: &str, focus: &str) -> String {
+    let name = a
+        .get("project_name")
+        .and_then(|x| x.as_str())
+        .unwrap_or("my project");
+    let summary = clean_line(
+        a.get("one_line_summary")
+            .and_then(|x| x.as_str())
+            .unwrap_or("Built and shipped a practical tool."),
+    );
+    let stack = a
+        .get("tech_stack")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .take(4)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|| "Tauri + React".to_string());
+    let problem = clean_line(
+        a.get("problem_it_solves")
+            .and_then(|x| x.as_str())
+            .unwrap_or("It removes repeated manual explanation work."),
+    );
+    let outcome = clean_line(
+        a.get("why_it_matters")
+            .and_then(|x| x.as_str())
+            .unwrap_or("It speeds up delivery and communication."),
+    );
+
+    let short = match focus {
+        "describe_stack" => format!("Shipped {} with {}.\n{}\nBuilt for real usage.", name, stack, summary),
+        "describe_problem" => format!("Built {} to solve this: {}.\n{}\nNow the workflow is clearer and faster.", name, truncate_chars(&problem, 110), summary),
+        "describe_outcome" => format!("{} is now shipping faster.\n{}\n{}", name, summary, truncate_chars(&outcome, 100)),
+        _ => format!("Built {}.\n{}\n{}", name, summary, truncate_chars(&outcome, 100)),
+    };
+    if length == "short" {
+        return short;
+    }
+    match focus {
+        "describe_stack" => format!(
+            "Built {} using {}.\n{}\nFocused on simple flows and local-first behavior.\nNo extra backend layer.\nOutcome: {}",
+            name,
+            stack,
+            summary,
+            truncate_chars(&outcome, 120)
+        ),
+        "describe_problem" => format!(
+            "Built {} to solve a concrete issue.\nProblem: {}\nApproach: local scan + structured analysis + reusable outputs.\n{}\nOutcome: {}",
+            name,
+            truncate_chars(&problem, 120),
+            summary,
+            truncate_chars(&outcome, 120)
+        ),
+        "describe_outcome" => format!(
+            "{} now delivers this result:\n{}\n{}\nStack: {}\nShipped and used in real workflows.",
+            name,
+            truncate_chars(&outcome, 120),
+            summary,
+            stack
+        ),
+        _ => format!(
+            "Built {} and shipped it end-to-end.\n{}\nProblem: {}\nStack: {}\nOutcome: {}",
+            name,
+            summary,
+            truncate_chars(&problem, 100),
+            stack,
+            truncate_chars(&outcome, 110)
+        ),
     }
 }
 
@@ -631,6 +783,147 @@ fn reanalyze_project(state: State<'_, AppState>, id: i64) -> Result<ProjectDetai
         .ok_or_else(|| "Project disappeared".to_string())
 }
 
+#[tauri::command]
+fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let profile = db::get_user_profile(&conn)?;
+    let has_profile = profile
+        .as_ref()
+        .map(|p| {
+            p.role.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false)
+                || !p.what_i_build.is_empty()
+                || p.app_goal.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false)
+        })
+        .unwrap_or(false);
+    let has_api_key = anthropic_key().is_ok() || openai_key().is_ok();
+    Ok(RuntimeStatus {
+        has_api_key,
+        has_profile,
+    })
+}
+
+#[tauri::command]
+fn get_project_importance(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<ProjectImportancePayload, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let analysis = db::get_latest_analysis_json(&conn, id)?
+        .ok_or_else(|| "No stored analysis for this project.".to_string())?;
+    Ok(ProjectImportancePayload {
+        top_insights: top_insights_from_analysis(&analysis),
+    })
+}
+
+#[tauri::command]
+fn generate_linkedin_post(
+    state: State<'_, AppState>,
+    args: LinkedinArgs,
+) -> Result<LinkedinResult, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let analysis = db::get_latest_analysis_json(&conn, args.id)?
+        .ok_or_else(|| "No stored analysis for this project.".to_string())?;
+    Ok(LinkedinResult {
+        text: build_linkedin_text(&analysis, &args.length, &args.focus),
+    })
+}
+
+#[tauri::command]
+fn export_project_bundle(
+    state: State<'_, AppState>,
+    args: ExportProjectArgs,
+) -> Result<ExportBundleResult, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let detail = db::get_project_by_id(&conn, args.id)?
+        .ok_or_else(|| "Project not found".to_string())?;
+    let analysis = detail
+        .analysis
+        .ok_or_else(|| "No stored analysis for this project.".to_string())?;
+    let case_cache = db::get_ai_cache_raw(&conn, args.id, "case_study")?;
+    let opp_cache = if args.include_opportunities {
+        db::get_ai_cache_raw(&conn, args.id, "opportunities")?
+    } else {
+        None
+    };
+    drop(conn);
+
+    let out_dir = std::path::PathBuf::from(args.output_dir);
+    std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+    let mut written = Vec::new();
+
+    let summary = analysis
+        .get("one_line_summary")
+        .and_then(|x| x.as_str())
+        .unwrap_or("No summary available");
+    let problem = analysis
+        .get("problem_it_solves")
+        .and_then(|x| x.as_str())
+        .unwrap_or("Not available");
+    let outcome = analysis
+        .get("why_it_matters")
+        .and_then(|x| x.as_str())
+        .unwrap_or("Not available");
+    let case_md = if let Some(raw) = case_cache {
+        if let Ok(cs) = serde_json::from_str::<CaseStudyPayload>(&raw) {
+            format!(
+                "# {}\n\n## Problem\n{}\n\n## Outcome\n{}\n\n## What we built\n{}\n\n## Visualization examples\n- CLI: realistic command output snippets\n- Dashboard: project summary + updates + cached assets\n- Files: generated markdown/text bundle\n",
+                cs.title,
+                cs.problem,
+                cs.outcome,
+                cs.what_we_built
+                    .iter()
+                    .take(4)
+                    .map(|x| format!("- {}", x))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        } else {
+            format!(
+                "# {}\n\n## Problem\n{}\n\n## Outcome\n{}\n",
+                detail.row.name, problem, outcome
+            )
+        }
+    } else {
+        format!(
+            "# {}\n\n## Problem\n{}\n\n## Outcome\n{}\n",
+            detail.row.name, problem, outcome
+        )
+    };
+    std::fs::write(out_dir.join("case-study.md"), case_md).map_err(|e| e.to_string())?;
+    written.push("case-study.md".to_string());
+
+    let pitch = format!(
+        "{}\n{}\n{}",
+        truncate_chars(&clean_line(summary), 120),
+        truncate_chars(&clean_line(problem), 120),
+        truncate_chars(&clean_line(outcome), 120)
+    );
+    std::fs::write(out_dir.join("short-pitch.txt"), pitch).map_err(|e| e.to_string())?;
+    written.push("short-pitch.txt".to_string());
+
+    let linkedin = build_linkedin_text(&analysis, "long", "describe_outcome");
+    std::fs::write(out_dir.join("linkedin-post.txt"), linkedin).map_err(|e| e.to_string())?;
+    written.push("linkedin-post.txt".to_string());
+
+    if let Some(raw) = opp_cache {
+        if let Ok(op) = serde_json::from_str::<OpportunityPayload>(&raw) {
+            let mut body = String::from("# Opportunities\n\n");
+            for item in op.opportunities.iter().take(5) {
+                body.push_str(&format!(
+                    "## {}\n{}\n\n- Problem: {}\n- Pricing: {}\n- Risk: {}\n\n",
+                    item.title, item.what_it_is, item.problem, item.pricing_logic, item.risk_level
+                ));
+            }
+            std::fs::write(out_dir.join("opportunities.md"), body).map_err(|e| e.to_string())?;
+            written.push("opportunities.md".to_string());
+        }
+    }
+
+    Ok(ExportBundleResult {
+        written_files: written,
+    })
+}
+
 //
 // ───────────────────────────────────────────────────────────
 // APP ENTRY
@@ -674,6 +967,10 @@ pub fn run() {
             incremental_project_update,
             suggest_evolution_steps,
             get_positioning_clarity,
+            get_runtime_status,
+            get_project_importance,
+            generate_linkedin_post,
+            export_project_bundle,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run app");

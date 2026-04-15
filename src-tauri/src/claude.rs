@@ -155,6 +155,37 @@ pub fn trim_json_string_values(v: &mut serde_json::Value) {
     }
 }
 
+fn strip_filler_words(s: &str) -> String {
+    let banned = ["robust", "leveraged", "seamless", "powerful"];
+    let mut out = s.trim().to_string();
+    for b in banned {
+        out = out.replace(b, "");
+        out = out.replace(&b.to_uppercase(), "");
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn shorten_text(s: &str, max_chars: usize) -> String {
+    strip_filler_words(s).chars().take(max_chars).collect::<String>()
+}
+
+fn clamp_lines(s: &str, max_lines: usize) -> String {
+    s.lines()
+        .map(|x| x.trim())
+        .filter(|x| !x.is_empty())
+        .take(max_lines)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn clamp_list(list: &mut Vec<String>, max_items: usize, max_chars: usize) {
+    let mut out = Vec::new();
+    for item in list.iter().take(max_items) {
+        out.push(shorten_text(item, max_chars));
+    }
+    *list = out;
+}
+
 //
 // ───────────────────────────────────────────────────────────
 // PARSE + VALIDATE
@@ -232,8 +263,40 @@ pub fn parse_and_validate(json_str: &str) -> Result<AnalysisPayload, String> {
 
     trim_json_string_values(&mut v);
 
-    let parsed: AnalysisPayload =
+    let mut parsed: AnalysisPayload =
         serde_json::from_value(v).map_err(|e| format!("Schema error: {}", e))?;
+
+    parsed.one_line_summary = shorten_text(&parsed.one_line_summary, 160);
+    parsed.deep_explanation = shorten_text(&parsed.deep_explanation, 260);
+    parsed.problem_it_solves = shorten_text(&parsed.problem_it_solves, 220);
+    parsed.why_it_matters = shorten_text(&parsed.why_it_matters, 220);
+    parsed.architecture_overview = shorten_text(&parsed.architecture_overview, 220);
+    parsed.full_narrative_explanation = clamp_lines(&parsed.full_narrative_explanation, 5);
+    clamp_list(&mut parsed.core_features, 6, 120);
+    clamp_list(&mut parsed.key_flows, 5, 120);
+    clamp_list(&mut parsed.tech_stack, 8, 48);
+    clamp_list(&mut parsed.how_it_works_step_by_step, 5, 120);
+    clamp_list(&mut parsed.design_decisions, 4, 120);
+    clamp_list(&mut parsed.tradeoffs_and_limitations, 4, 120);
+    clamp_list(&mut parsed.example_outputs, 3, 130);
+
+    clamp_list(&mut parsed.product_intelligence.target_users, 3, 100);
+    clamp_list(&mut parsed.product_intelligence.use_cases, 3, 100);
+    clamp_list(&mut parsed.product_intelligence.monetization_models, 3, 100);
+    clamp_list(&mut parsed.product_intelligence.distribution_channels, 3, 100);
+    clamp_list(&mut parsed.product_intelligence.what_is_missing, 3, 100);
+    clamp_list(&mut parsed.product_intelligence.strengths, 3, 100);
+    clamp_list(&mut parsed.product_intelligence.risks, 3, 100);
+    clamp_list(
+        &mut parsed.product_intelligence.go_to_market.where_to_sell,
+        3,
+        100,
+    );
+    clamp_list(
+        &mut parsed.product_intelligence.go_to_market.first_steps,
+        3,
+        100,
+    );
 
     if parsed.full_narrative_explanation.trim().is_empty() {
         return Err("full_narrative_explanation must be non-empty".into());

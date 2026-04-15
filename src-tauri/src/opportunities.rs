@@ -125,8 +125,23 @@ pub fn parse_and_validate_opportunities(json_str: &str) -> Result<OpportunityPay
 
     trim_json_string_values(&mut v);
 
-    let parsed: OpportunityPayload =
+    let mut parsed: OpportunityPayload =
         serde_json::from_value(v).map_err(|e| format!("Opportunity schema error: {}", e))?;
+
+    for op in parsed.opportunities.iter_mut() {
+        op.title = op.title.chars().take(90).collect();
+        op.what_it_is = op.what_it_is.lines().take(3).collect::<Vec<_>>().join(" ");
+        op.problem = op.problem.lines().take(2).collect::<Vec<_>>().join(" ");
+        op.why_this_problem_is_real_now = op
+            .why_this_problem_is_real_now
+            .lines()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(" ");
+        op.pricing_logic = op.pricing_logic.lines().take(2).collect::<Vec<_>>().join(" ");
+        op.why_this_could_fail = op.why_this_could_fail.lines().take(2).collect::<Vec<_>>().join(" ");
+        op.distribution_strategy.truncate(3);
+    }
 
     let n = parsed.opportunities.len();
     if n < 3 || n > 5 {

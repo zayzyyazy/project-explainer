@@ -153,8 +153,27 @@ pub fn parse_and_validate_case_study(json_str: &str) -> Result<CaseStudyPayload,
     normalize_proof_blocks(&mut v);
     trim_json_string_values(&mut v);
 
-    let parsed: CaseStudyPayload =
+    let mut parsed: CaseStudyPayload =
         serde_json::from_value(v).map_err(|e| format!("Case study schema error: {}", e))?;
+
+    parsed.problem = parsed.problem.lines().take(3).collect::<Vec<_>>().join(" ");
+    parsed.why_it_mattered = parsed
+        .why_it_mattered
+        .lines()
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" ");
+    parsed.approach = parsed.approach.lines().take(3).collect::<Vec<_>>().join(" ");
+    parsed.solution = parsed.solution.lines().take(3).collect::<Vec<_>>().join(" ");
+    parsed.outcome = parsed.outcome.lines().take(3).collect::<Vec<_>>().join(" ");
+    parsed.narrative = parsed
+        .narrative
+        .lines()
+        .take(5)
+        .collect::<Vec<_>>()
+        .join("\n");
+    parsed.what_we_built.truncate(3);
+    parsed.proof_blocks.truncate(3);
 
     if parsed.title.trim().is_empty() {
         return Err("Case study title must be non-empty".into());
