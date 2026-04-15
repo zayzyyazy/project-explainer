@@ -1,13 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
-import type { Opportunity, OpportunityPayload, ProjectRow } from "../types";
+import type {
+  AiOpportunitiesResult,
+  Opportunity,
+  OpportunityPayload,
+  ProjectListItem,
+} from "../types";
 
 export default function Opportunities() {
-  const [projects, setProjects] = useState<ProjectRow[]>([]);
+  const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
   const [data, setData] = useState<OpportunityPayload | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [fromCache, setFromCache] = useState<boolean | null>(null);
+  const [oppBusy, setOppBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
@@ -20,7 +26,7 @@ export default function Opportunities() {
   async function loadProjects() {
     setError(null);
     try {
-      const rows = await invoke<ProjectRow[]>("list_projects");
+      const rows = await invoke<ProjectListItem[]>("list_projects");
       setProjects(rows);
     } catch (e) {
       setError(String(e));
@@ -32,25 +38,47 @@ export default function Opportunities() {
     [projects]
   );
 
-  async function onGenerate() {
-    if (!selectedId) return;
+  const fetchOpportunities = useCallback(
+    async (regenerate: boolean) => {
+      if (!selectedId) return;
 
-    setBusy(true);
-    setError(null);
-    setData(null);
-    setSaveError(null);
+      setOppBusy(true);
+      setError(null);
+      setSaveError(null);
+      if (!regenerate) {
+        setData(null);
+        setFromCache(null);
+      }
 
-    try {
-      const result = await invoke<OpportunityPayload>("generate_opportunities", {
-        id: Number(selectedId),
-      });
-      setData(result);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
+      await new Promise<void>((r) => setTimeout(r, 0));
+
+      try {
+        const result = await invoke<AiOpportunitiesResult>("generate_opportunities", {
+          id: Number(selectedId),
+          regenerate,
+        } satisfies { id: number; regenerate: boolean });
+        setData(result.payload);
+        setFromCache(result.from_cache);
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setOppBusy(false);
+      }
+    },
+    [selectedId]
+  );
+
+  useEffect(() => {
+    if (!selectedId) {
+      setData(null);
+      setFromCache(null);
+      setError(null);
+      return;
     }
-  }
+    setData(null);
+    setFromCache(null);
+    setError(null);
+  }, [selectedId]);
 
   const selectedProjectName = useMemo(() => {
     if (!selectedId) return "";
@@ -120,7 +148,6 @@ export default function Opportunities() {
             <select
               value={selectedId}
               onChange={(e) => setSelectedId(e.target.value)}
-              disabled={busy}
               style={{ minWidth: 320, padding: "0.5rem" }}
             >
               <option value="">Choose an analyzed project</option>
@@ -131,11 +158,33 @@ export default function Opportunities() {
               ))}
             </select>
 
-            <div style={{ marginTop: "1rem" }}>
-              <button onClick={onGenerate} disabled={busy || !selectedId}>
-                {busy ? "Generating…" : "Generate Opportunities"}
+            <div style={{ marginTop: "1rem", display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => void fetchOpportunities(false)}
+                disabled={oppBusy || !selectedId}
+              >
+                {oppBusy && !data ? "Loading…" : "Load opportunities"}
               </button>
+              <button
+                type="button"
+                onClick={() => void fetchOpportunities(true)}
+                disabled={oppBusy || !selectedId}
+              >
+                {oppBusy && !!data ? "Working…" : "Regenerate"}
+              </button>
+              {fromCache === true && !oppBusy && selectedId ? (
+                <span className="muted" style={{ alignSelf: "center", fontSize: "0.85rem" }}>
+                  Loaded from saved results
+                </span>
+              ) : null}
             </div>
+            {oppBusy && selectedId ? (
+              <p className="muted" style={{ marginTop: "0.75rem" }}>
+                {data ? "Regenerating opportunities…" : "Loading opportunities…"}
+              </p>
+            ) : null}
           </>
         )}
       </section>
@@ -151,7 +200,7 @@ export default function Opportunities() {
                     type="button"
                     className="btn btn-primary"
                     disabled={
-                      busy ||
+                      oppBusy ||
                       !selectedId ||
                       savingKey === ideaKey(op) ||
                       savedKeys.has(ideaKey(op))

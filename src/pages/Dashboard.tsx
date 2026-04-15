@@ -1,8 +1,25 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { ProjectListItem, TopProjectsPayload } from "../types";
+
+const ProjectCard = memo(function ProjectCard({ p }: { p: ProjectListItem }) {
+  return (
+    <Link to={`/project/${p.id}`} style={{ color: "inherit" }}>
+      <div className="card">
+        <h2>{p.name}</h2>
+        <p className="meta">{p.one_line_summary || "—"}</p>
+        <p className="meta">
+          Last analyzed:{" "}
+          {p.last_analyzed_at
+            ? new Date(p.last_analyzed_at).toLocaleString()
+            : "—"}
+        </p>
+      </div>
+    </Link>
+  );
+});
 
 export default function Dashboard() {
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
@@ -41,19 +58,12 @@ export default function Dashboard() {
     }
   }, []);
 
-  useEffect(() => {
-    const analyzed = projects.filter((p) => p.last_analyzed_at);
-    if (analyzed.length > 0) void refreshTopPicks();
-  }, [projects, refreshTopPicks]);
-
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return projects;
     return projects.filter((p) => {
-      const stack = p.detected_stack.join(" ").toLowerCase();
       return (
         p.name.toLowerCase().includes(q) ||
-        stack.includes(q) ||
         (p.one_line_summary || "").toLowerCase().includes(q)
       );
     });
@@ -162,7 +172,7 @@ export default function Dashboard() {
         <input
           className="search"
           type="search"
-          placeholder="Search by name or stack…"
+          placeholder="Search by name or summary…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           aria-label="Filter projects"
@@ -177,28 +187,7 @@ export default function Dashboard() {
           </p>
         )}
         {filtered.map((p) => (
-          <Link key={p.id} to={`/project/${p.id}`} style={{ color: "inherit" }}>
-            <div className="card">
-              <h2>{p.name}</h2>
-              <p className="meta">{p.one_line_summary || "—"}</p>
-              <p className="meta" title={p.path}>
-                {p.path}
-              </p>
-              <p className="meta">
-                Last analyzed:{" "}
-                {p.last_analyzed_at
-                  ? new Date(p.last_analyzed_at).toLocaleString()
-                  : "—"}
-              </p>
-              <div className="stack-tags">
-                {p.detected_stack.map((s) => (
-                  <span key={s} className="tag">
-                    {s}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </Link>
+          <ProjectCard key={p.id} p={p} />
         ))}
       </div>
     </div>

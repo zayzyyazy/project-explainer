@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -8,6 +8,11 @@ import type {
   PositioningPayload,
   ProjectDetail as PD,
 } from "../types";
+
+/** Avoid re-fetching `get_project` when revisiting the same id in one app session. */
+const projectDetailSessionCache = new Map<number, PD>();
+
+const NARRATIVE_PREVIEW_CHARS = 1200;
 
 export default function ProjectDetail() {
   const { id } = useParams();
@@ -21,38 +26,49 @@ export default function ProjectDetail() {
     useState<EvolutionSuggestionsPayload | null>(null);
   const [insightError, setInsightError] = useState<string | null>(null);
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
+  const [narrativeExpanded, setNarrativeExpanded] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (force = false) => {
     if (!id) return;
+    const numId = Number(id);
     setError(null);
+    if (!force) {
+      const cached = projectDetailSessionCache.get(numId);
+      if (cached) {
+        setProject(cached);
+        return;
+      }
+    }
     try {
       const p = await invoke<PD | null>("get_project", {
-        id: Number(id),
+        id: numId,
       });
       setProject(p);
+      if (p) projectDetailSessionCache.set(numId, p);
     } catch (e) {
       setError(String(e));
     }
   }, [id]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
-
-  useEffect(() => {
     setPositioning(null);
     setEvolutionIdeas(null);
     setInsightError(null);
     setUpdateMsg(null);
-  }, [id]);
+    setNarrativeExpanded(false);
+    setProject(null);
+    void load(false);
+  }, [id, load]);
 
   async function onReanalyze() {
     if (!id) return;
+    const numId = Number(id);
     setBusy(true);
     setError(null);
     try {
-      await invoke("reanalyze_project", { id: Number(id) });
-      await load();
+      projectDetailSessionCache.delete(numId);
+      await invoke("reanalyze_project", { id: numId });
+      await load(true);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -66,6 +82,7 @@ export default function ProjectDetail() {
     setBusy(true);
     setError(null);
     try {
+      projectDetailSessionCache.delete(Number(id));
       await invoke("delete_project", { id: Number(id) });
       navigate("/dashboard");
     } catch (e) {
@@ -87,7 +104,8 @@ export default function ProjectDetail() {
       setUpdateMsg(
         `Recorded: ${res.payload.version_label} — ${res.payload.what_changed_overview.slice(0, 120)}…`
       );
-      await load();
+      projectDetailSessionCache.delete(Number(id));
+      await load(true);
     } catch (e) {
       setInsightError(String(e));
     } finally {
@@ -152,6 +170,13 @@ export default function ProjectDetail() {
       setBusy(false);
     }
   }
+
+  const narrativePreview = useMemo(() => {
+    const text = project?.analysis?.full_narrative_explanation;
+    if (!text) return null;
+    if (narrativeExpanded || text.length <= NARRATIVE_PREVIEW_CHARS) return text;
+    return `${text.slice(0, NARRATIVE_PREVIEW_CHARS)}…`;
+  }, [project?.analysis?.full_narrative_explanation, narrativeExpanded]);
 
   if (!project && !error) return <p className="muted">Loading…</p>;
 
@@ -403,9 +428,16 @@ export default function ProjectDetail() {
           {a.full_narrative_explanation && (
             <section>
               <h3>Full Narrative</h3>
-              <p style={{ whiteSpace: "pre-wrap" }}>
-                {a.full_narrative_explanation}
-              </p>
+              <p style={{ whiteSpace: "pre-wrap" }}>{narrativePreview}</p>
+              {a.full_narrative_explanation.length > NARRATIVE_PREVIEW_CHARS ? (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setNarrativeExpanded((v) => !v)}
+                >
+                  {narrativeExpanded ? "Show less" : "Show full narrative"}
+                </button>
+              ) : null}
             </section>
           )}
         </>

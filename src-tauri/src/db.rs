@@ -3,6 +3,15 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Lightweight row for `list_projects` only — no path, stack, or analysis.
+#[derive(Debug, Serialize)]
+pub struct ProjectListItem {
+    pub id: i64,
+    pub name: String,
+    pub one_line_summary: String,
+    pub last_analyzed_at: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ProjectRow {
     pub id: i64,
@@ -109,6 +118,15 @@ fn migrate(conn: &Connection) -> Result<(), String> {
                 FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_evolutions_project ON project_evolutions(project_id);
+            CREATE TABLE IF NOT EXISTS project_ai_cache (
+                project_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (project_id, kind),
+                CHECK (kind IN ('opportunities', 'case_study')),
+                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
             "#,
         )
         .map_err(|e| e.to_string())?;
@@ -157,6 +175,61 @@ pub fn save_user_profile(conn: &Connection, p: &UserProfile) -> Result<(), Strin
         params![p.role, w_json, p.app_goal, now],
     )
     .map_err(|e| e.to_string())?;
+    clear_all_case_study_caches(conn)?;
+    Ok(())
+}
+
+pub fn get_ai_cache_raw(
+    conn: &Connection,
+    project_id: i64,
+    kind: &str,
+) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT payload_json FROM project_ai_cache WHERE project_id = ?1 AND kind = ?2",
+        params![project_id, kind],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+pub fn set_ai_cache(
+    conn: &Connection,
+    project_id: i64,
+    kind: &str,
+    payload_json: &str,
+) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO project_ai_cache (project_id, kind, payload_json, updated_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(project_id, kind) DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at",
+        params![project_id, kind, payload_json, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn invalidate_project_ai_caches(conn: &Connection, project_id: i64) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM project_ai_cache WHERE project_id = ?1",
+        params![project_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn delete_ai_cache(conn: &Connection, project_id: i64, kind: &str) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM project_ai_cache WHERE project_id = ?1 AND kind = ?2",
+        params![project_id, kind],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn clear_all_case_study_caches(conn: &Connection) -> Result<(), String> {
+    conn.execute("DELETE FROM project_ai_cache WHERE kind = 'case_study'", [])
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -176,24 +249,19 @@ pub fn get_latest_analysis_json(
     Ok(raw.and_then(|s| serde_json::from_str(&s).ok()))
 }
 
-pub fn list_projects(conn: &Connection) -> Result<Vec<ProjectRow>, String> {
+pub fn list_projects(conn: &Connection) -> Result<Vec<ProjectListItem>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, name, path, detected_stack, one_line_summary, last_analyzed_at, created_at FROM projects ORDER BY datetime(created_at) DESC",
+            "SELECT id, name, one_line_summary, last_analyzed_at FROM projects ORDER BY datetime(created_at) DESC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
-            let stack_json: String = row.get(3)?;
-            let stack: Vec<String> = serde_json::from_str(&stack_json).unwrap_or_default();
-            Ok(ProjectRow {
+            Ok(ProjectListItem {
                 id: row.get(0)?,
                 name: row.get(1)?,
-                path: row.get(2)?,
-                detected_stack: stack,
-                one_line_summary: row.get(4)?,
-                last_analyzed_at: row.get(5)?,
-                created_at: row.get(6)?,
+                one_line_summary: row.get(2)?,
+                last_analyzed_at: row.get(3)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -373,6 +441,7 @@ pub fn update_project_after_analysis(
         params![project_id, raw, architecture, how_works, how_run, now],
     )
     .map_err(|e| e.to_string())?;
+    invalidate_project_ai_caches(conn, project_id)?;
     Ok(())
 }
 

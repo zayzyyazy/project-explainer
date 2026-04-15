@@ -24,6 +24,11 @@ export interface OpportunityPayload {
   opportunities: Opportunity[];
 }
 
+export interface AiOpportunitiesResult {
+  payload: OpportunityPayload;
+  from_cache: boolean;
+}
+
 /** Proof snippet: inferred CLI, file sample, or UI description — makes the case study feel real. */
 export interface CaseStudyProofBlock {
   kind: string;
@@ -45,6 +50,11 @@ export interface CaseStudyPayload {
   quote_ready_one_liner: string;
   what_we_built: string[];
   proof_blocks: CaseStudyProofBlock[];
+}
+
+export interface AiCaseStudyResult {
+  payload: CaseStudyPayload;
+  from_cache: boolean;
 }
 
 /** Local onboarding — injected into case study generation when set. */
@@ -104,7 +114,16 @@ export interface AnalysisPayload {
   product_intelligence?: ProductIntelligence;
 }
 
+/** From `list_projects` only — id, name, summary; no path/stack/analysis. */
 export interface ProjectListItem {
+  id: number;
+  name: string;
+  one_line_summary: string;
+  last_analyzed_at: string | null;
+}
+
+/** Full project row (e.g. `get_project` / detail). */
+export interface ProjectRow {
   id: number;
   name: string;
   path: string;
@@ -122,7 +141,7 @@ export interface ProjectEvolutionEntry {
   created_at: string;
 }
 
-export interface ProjectDetail extends ProjectListItem {
+export interface ProjectDetail extends ProjectRow {
   analysis: AnalysisPayload | null;
   file_index_sample: string[];
   raw_file_list_truncated: boolean;
@@ -167,9 +186,6 @@ export interface PositioningPayload {
   primary_audience: string;
   one_sentence_anchor: string;
 }
-
-/** Alias: matches Rust `ProjectRow` from `list_projects`. */
-export type ProjectRow = ProjectListItem;
 
 /** Persisted “Idea Project” (saved opportunity). */
 export interface IdeaProject {

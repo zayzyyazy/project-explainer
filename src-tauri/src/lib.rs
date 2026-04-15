@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
+use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 
 mod case_study;
@@ -12,13 +13,34 @@ mod opportunities;
 mod scanner;
 
 use db::{
-    InsertProject, IdeaProject, ProjectDetail, ProjectRow, SaveIdeaProjectInput, UserProfile,
+    InsertProject, IdeaProject, ProjectDetail, ProjectListItem, SaveIdeaProjectInput, UserProfile,
 };
 use case_study::CaseStudyPayload;
 use living::{
     EvolutionSuggestionsPayload, IncrementalUpdateResult, PositioningPayload, TopProjectsPayload,
 };
 use opportunities::OpportunityPayload;
+
+#[derive(Serialize)]
+pub struct AiOpportunitiesResult {
+    pub payload: OpportunityPayload,
+    pub from_cache: bool,
+}
+
+#[derive(Serialize)]
+pub struct AiCaseStudyResult {
+    pub payload: CaseStudyPayload,
+    pub from_cache: bool,
+}
+
+/// IPC payload for cache-first AI commands (`regenerate` defaults to false if omitted).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateAiArgs {
+    id: i64,
+    #[serde(default)]
+    regenerate: bool,
+}
 
 struct AppState {
     db: Mutex<rusqlite::Connection>,
@@ -108,7 +130,7 @@ pub(crate) fn complete_ai_with_system(
 //
 
 #[tauri::command]
-fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectRow>, String> {
+fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectListItem>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     db::list_projects(&conn)
 }
@@ -279,38 +301,121 @@ fn run_generate_case_study_from_analysis(
 #[tauri::command]
 fn generate_opportunities(
     state: State<'_, AppState>,
-    id: i64,
-) -> Result<OpportunityPayload, String> {
+    args: GenerateAiArgs,
+) -> Result<AiOpportunitiesResult, String> {
+    let id = args.id;
+    let regenerate = args.regenerate;
+
+    if !regenerate {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        if let Some(raw) = db::get_ai_cache_raw(&conn, id, "opportunities")? {
+            match serde_json::from_str::<OpportunityPayload>(&raw) {
+                Ok(payload) => {
+                    drop(conn);
+                    eprintln!("USING CACHE: opportunities project_id={}", id);
+                    return Ok(AiOpportunitiesResult {
+                        payload,
+                        from_cache: true,
+                    });
+                }
+                Err(e) => {
+                    eprintln!(
+                        "CACHE INVALID opportunities project_id={} — will call AI. {}",
+                        id, e
+                    );
+                    let _ = db::delete_ai_cache(&conn, id, "opportunities");
+                }
+            }
+        }
+        drop(conn);
+    }
+
+    eprintln!("CALLING AI: opportunities project_id={}", id);
+
+    let analysis = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let detail = db::get_project_by_id(&conn, id)?
+            .ok_or_else(|| "Project not found".to_string())?;
+        detail
+            .analysis
+            .ok_or_else(|| {
+                "No stored analysis for this project. Complete analysis first, then try again."
+                    .to_string()
+            })?
+    };
+
+    let payload = run_generate_opportunities_from_analysis(&analysis)?;
+
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-
-    let detail = db::get_project_by_id(&conn, id)?
-        .ok_or_else(|| "Project not found".to_string())?;
-
-    let analysis = detail.analysis.ok_or_else(|| {
-        "No stored analysis for this project. Complete analysis first, then try again.".to_string()
-    })?;
-
+    let json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    db::set_ai_cache(&conn, id, "opportunities", &json)?;
     drop(conn);
 
-    run_generate_opportunities_from_analysis(&analysis)
+    Ok(AiOpportunitiesResult {
+        payload,
+        from_cache: false,
+    })
 }
 
 #[tauri::command]
-fn generate_case_study(state: State<'_, AppState>, id: i64) -> Result<CaseStudyPayload, String> {
+fn generate_case_study(
+    state: State<'_, AppState>,
+    args: GenerateAiArgs,
+) -> Result<AiCaseStudyResult, String> {
+    let id = args.id;
+    let regenerate = args.regenerate;
+
+    if !regenerate {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        if let Some(raw) = db::get_ai_cache_raw(&conn, id, "case_study")? {
+            match serde_json::from_str::<CaseStudyPayload>(&raw) {
+                Ok(payload) => {
+                    drop(conn);
+                    eprintln!("USING CACHE: case_study project_id={}", id);
+                    return Ok(AiCaseStudyResult {
+                        payload,
+                        from_cache: true,
+                    });
+                }
+                Err(e) => {
+                    eprintln!(
+                        "CACHE INVALID case_study project_id={} — will call AI. {}",
+                        id, e
+                    );
+                    let _ = db::delete_ai_cache(&conn, id, "case_study");
+                }
+            }
+        }
+        drop(conn);
+    }
+
+    eprintln!("CALLING AI: case_study project_id={}", id);
+
+    let (analysis, profile) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let detail = db::get_project_by_id(&conn, id)?
+            .ok_or_else(|| "Project not found".to_string())?;
+        let analysis = detail
+            .analysis
+            .ok_or_else(|| {
+                "No stored analysis for this project. Complete analysis first, then try again."
+                    .to_string()
+            })?;
+        let profile = db::get_user_profile(&conn)?;
+        (analysis, profile)
+    };
+
+    let payload = run_generate_case_study_from_analysis(&analysis, profile.as_ref())?;
+
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-
-    let detail = db::get_project_by_id(&conn, id)?
-        .ok_or_else(|| "Project not found".to_string())?;
-
-    let analysis = detail.analysis.ok_or_else(|| {
-        "No stored analysis for this project. Complete analysis first, then try again.".to_string()
-    })?;
-
-    let profile = db::get_user_profile(&conn)?;
-
+    let json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    db::set_ai_cache(&conn, id, "case_study", &json)?;
     drop(conn);
 
-    run_generate_case_study_from_analysis(&analysis, profile.as_ref())
+    Ok(AiCaseStudyResult {
+        payload,
+        from_cache: false,
+    })
 }
 
 //
