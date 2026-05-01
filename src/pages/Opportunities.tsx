@@ -45,18 +45,25 @@ export default function Opportunities() {
       setOppBusy(true);
       setError(null);
       setSaveError(null);
+
       if (!regenerate) {
         setData(null);
         setFromCache(null);
       }
 
-      await new Promise<void>((r) => setTimeout(r, 0));
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
       try {
-        const result = await invoke<AiOpportunitiesResult>("generate_opportunities", {
-          id: Number(selectedId),
-          regenerate,
-        } satisfies { id: number; regenerate: boolean });
+        const result = await invoke<AiOpportunitiesResult>(
+          "generate_opportunities",
+          {
+            args: {
+              id: Number(selectedId),
+              regenerate,
+            },
+          }
+        );
+
         setData(result.payload);
         setFromCache(result.from_cache);
       } catch (e) {
@@ -75,6 +82,7 @@ export default function Opportunities() {
       setError(null);
       return;
     }
+
     setData(null);
     setFromCache(null);
     setError(null);
@@ -82,9 +90,7 @@ export default function Opportunities() {
 
   const selectedProjectName = useMemo(() => {
     if (!selectedId) return "";
-    return (
-      analyzedProjects.find((p) => p.id === Number(selectedId))?.name ?? ""
-    );
+    return analyzedProjects.find((p) => p.id === Number(selectedId))?.name ?? "";
   }, [analyzedProjects, selectedId]);
 
   function ideaKey(op: Opportunity) {
@@ -93,9 +99,11 @@ export default function Opportunities() {
 
   async function onSaveIdea(op: Opportunity) {
     if (!selectedId) return;
+
     const key = ideaKey(op);
     setSaveError(null);
     setSavingKey(key);
+
     try {
       await invoke<number>("save_idea_project", {
         input: {
@@ -114,7 +122,12 @@ export default function Opportunities() {
           why_this_could_fail: op.why_this_could_fail,
         },
       });
-      setSavedKeys((prev) => new Set(prev).add(key));
+
+      setSavedKeys((prev) => {
+        const next = new Set(prev);
+        next.add(key);
+        return next;
+      });
     } catch (e) {
       setSaveError(String(e));
     } finally {
@@ -125,7 +138,7 @@ export default function Opportunities() {
   return (
     <div>
       <p>
-        <Link to="/dashboard">← Dashboard</Link>
+        <Link to="/">← Dashboard</Link>
       </p>
 
       <h2>Opportunities Dashboard</h2>
@@ -158,7 +171,14 @@ export default function Opportunities() {
               ))}
             </select>
 
-            <div style={{ marginTop: "1rem", display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+            <div
+              style={{
+                marginTop: "1rem",
+                display: "flex",
+                gap: "0.75rem",
+                flexWrap: "wrap",
+              }}
+            >
               <button
                 type="button"
                 className="btn btn-primary"
@@ -167,6 +187,7 @@ export default function Opportunities() {
               >
                 {oppBusy && !data ? "Loading…" : "Load opportunities"}
               </button>
+
               <button
                 type="button"
                 onClick={() => void fetchOpportunities(true)}
@@ -174,12 +195,17 @@ export default function Opportunities() {
               >
                 {oppBusy && !!data ? "Working…" : "Regenerate"}
               </button>
+
               {fromCache === true && !oppBusy && selectedId ? (
-                <span className="muted" style={{ alignSelf: "center", fontSize: "0.85rem" }}>
+                <span
+                  className="muted"
+                  style={{ alignSelf: "center", fontSize: "0.85rem" }}
+                >
                   Loaded from saved results
                 </span>
               ) : null}
             </div>
+
             {oppBusy && selectedId ? (
               <p className="muted" style={{ marginTop: "0.75rem" }}>
                 {data ? "Regenerating opportunities…" : "Loading opportunities…"}
@@ -195,6 +221,7 @@ export default function Opportunities() {
             <article key={`${op.title}-${i}`} className="opportunity-card">
               <div className="opportunity-card-head">
                 <h3>{op.title}</h3>
+
                 <div className="opportunity-save-row">
                   <button
                     type="button"
@@ -213,6 +240,7 @@ export default function Opportunities() {
                         ? "Saved"
                         : "Save Idea"}
                   </button>
+
                   {selectedProjectName ? (
                     <span className="muted" style={{ fontSize: "0.8rem" }}>
                       From: {selectedProjectName}

@@ -205,9 +205,11 @@ export default function ProjectDetail() {
     setInsightError(null);
     try {
       const res = await invoke<LinkedinResult>("generate_linkedin_post", {
-        id: Number(id),
-        length: linkedinLength,
-        focus: linkedinFocus,
+        args: {
+          id: Number(id),
+          length: linkedinLength,
+          focus: linkedinFocus,
+        },
       });
       setLinkedinText(res.text);
     } catch (e) {
