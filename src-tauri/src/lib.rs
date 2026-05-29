@@ -54,23 +54,28 @@ struct RuntimeStatus {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-struct ProjectImportancePayload {
-    top_insights: Vec<String>,
+#[serde(rename_all = "camelCase")]
+struct AiSettingsPublic {
+    provider: String,
+    anthropic_model: String,
+    openai_model: String,
+    has_anthropic_key: bool,
+    has_openai_key: bool,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct LinkedinArgs {
-    id: i64,
-    length: String,
-    focus: String,
+struct SaveAiSettingsInput {
+    provider: String,
+    model: String,
+    #[serde(default)]
+    api_key: Option<String>,
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LinkedinResult {
-    text: String,
+#[serde(rename_all = "snake_case")]
+struct ProjectImportancePayload {
+    top_insights: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -100,68 +105,159 @@ fn db_path() -> Result<std::path::PathBuf, String> {
 
 //
 // ───────────────────────────────────────────────────────────
-// ENV + CONFIG
+// ENV + CONFIG (fallback when Settings / SQLite are empty)
 // ───────────────────────────────────────────────────────────
 //
 
-fn anthropic_key() -> Result<String, String> {
-    let key = std::env::var("ANTHROPIC_API_KEY")
-        .map_err(|_| "ANTHROPIC_API_KEY is not set. Add it to src-tauri/.env".to_string())?;
-
-    let key = key.trim().to_string();
-
-    if !key.starts_with("sk-ant-") {
-        return Err("Invalid Anthropic key format".into());
-    }
-
-    Ok(key)
+#[derive(Clone)]
+struct AiCallBundle {
+    provider: String,
+    api_key: String,
+    model: String,
 }
 
-fn anthropic_model() -> String {
+impl AiCallBundle {
+    fn complete_with_system(&self, system_prompt: &str, user_message: &str) -> Result<String, String> {
+        match self.provider.as_str() {
+            "openai" => openai::call_openai_with_system(
+                &self.api_key,
+                &self.model,
+                system_prompt,
+                user_message,
+            ),
+            _ => claude::call_claude_with_system(
+                &self.api_key,
+                &self.model,
+                system_prompt,
+                user_message,
+            ),
+        }
+    }
+
+    fn complete_project_analysis(&self, user_message: &str) -> Result<String, String> {
+        match self.provider.as_str() {
+            "openai" => openai::call_openai(&self.api_key, &self.model, user_message),
+            _ => claude::call_claude(&self.api_key, &self.model, user_message),
+        }
+    }
+}
+
+fn anthropic_model_env() -> String {
     std::env::var("ANTHROPIC_MODEL")
         .unwrap_or_else(|_| "claude-sonnet-4-6".to_string())
         .trim()
         .to_string()
 }
 
-fn ai_provider() -> String {
+fn ai_provider_env() -> String {
     std::env::var("AI_PROVIDER")
         .unwrap_or_else(|_| "anthropic".to_string())
         .trim()
         .to_lowercase()
 }
 
-fn openai_key() -> Result<String, String> {
-    let key = std::env::var("OPENAI_API_KEY").map_err(|_| {
-        "OPENAI_API_KEY is not set. Add it to src-tauri/.env when AI_PROVIDER=openai.".to_string()
-    })?;
-
-    Ok(key.trim().to_string())
-}
-
-fn openai_model() -> String {
+fn openai_model_env() -> String {
     std::env::var("OPENAI_MODEL")
         .unwrap_or_else(|_| "gpt-4o-mini".to_string())
         .trim()
         .to_string()
 }
 
+fn effective_ai_provider(stored: &str) -> String {
+    let t = stored.trim().to_lowercase();
+    if t == "openai" {
+        return "openai".into();
+    }
+    if t == "anthropic" {
+        return "anthropic".into();
+    }
+    let e = ai_provider_env();
+    if e == "openai" {
+        "openai".into()
+    } else {
+        "anthropic".into()
+    }
+}
+
+fn validate_anthropic_key_for_use(key: &str) -> Result<String, String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("API key missing. Add your Anthropic key in Settings or set ANTHROPIC_API_KEY in the environment.".into());
+    }
+    if !key.starts_with("sk-ant-") {
+        return Err("API request failed: Anthropic keys should start with sk-ant-. Check Settings.".into());
+    }
+    Ok(key.to_string())
+}
+
+fn pick_anthropic_key(row: &db::AppAiSettingsRow) -> Result<String, String> {
+    let k = row.anthropic_api_key.trim();
+    if !k.is_empty() {
+        return validate_anthropic_key_for_use(k);
+    }
+    match std::env::var("ANTHROPIC_API_KEY") {
+        Ok(v) => validate_anthropic_key_for_use(v.trim()),
+        Err(_) => Err("API key missing. Add your Anthropic key in Settings or set ANTHROPIC_API_KEY in the environment.".into()),
+    }
+}
+
+fn pick_openai_key(row: &db::AppAiSettingsRow) -> Result<String, String> {
+    let k = row.openai_api_key.trim();
+    if !k.is_empty() {
+        return Ok(k.to_string());
+    }
+    match std::env::var("OPENAI_API_KEY") {
+        Ok(v) => {
+            let t = v.trim().to_string();
+            if t.is_empty() {
+                Err("API key missing. Add your OpenAI key in Settings or set OPENAI_API_KEY in the environment.".into())
+            } else {
+                Ok(t)
+            }
+        }
+        Err(_) => Err("API key missing. Add your OpenAI key in Settings or set OPENAI_API_KEY in the environment.".into()),
+    }
+}
+
+fn pick_anthropic_model(row: &db::AppAiSettingsRow) -> String {
+    let m = row.anthropic_model.trim();
+    if !m.is_empty() {
+        m.to_string()
+    } else {
+        anthropic_model_env()
+    }
+}
+
+fn pick_openai_model(row: &db::AppAiSettingsRow) -> String {
+    let m = row.openai_model.trim();
+    if !m.is_empty() {
+        m.to_string()
+    } else {
+        openai_model_env()
+    }
+}
+
+fn resolve_ai_bundle(conn: &rusqlite::Connection) -> Result<AiCallBundle, String> {
+    let row = db::get_app_ai_settings(conn)?;
+    let provider = effective_ai_provider(&row.ai_provider);
+    let (api_key, model) = match provider.as_str() {
+        "openai" => (pick_openai_key(&row)?, pick_openai_model(&row)),
+        _ => (pick_anthropic_key(&row)?, pick_anthropic_model(&row)),
+    };
+    Ok(AiCallBundle {
+        provider,
+        api_key,
+        model,
+    })
+}
+
 pub(crate) fn complete_ai_with_system(
+    conn: &rusqlite::Connection,
     system_prompt: &str,
     user_message: &str,
 ) -> Result<String, String> {
-    match ai_provider().as_str() {
-        "openai" => {
-            let api_key = openai_key()?;
-            let model = openai_model();
-            openai::call_openai_with_system(&api_key, &model, system_prompt, user_message)
-        }
-        _ => {
-            let api_key = anthropic_key()?;
-            let model = anthropic_model();
-            claude::call_claude_with_system(&api_key, &model, system_prompt, user_message)
-        }
-    }
+    let bundle = resolve_ai_bundle(conn)?;
+    bundle.complete_with_system(system_prompt, user_message)
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {
@@ -180,8 +276,25 @@ fn clean_line(s: &str) -> String {
 
 fn top_insights_from_analysis(a: &serde_json::Value) -> Vec<String> {
     let mut out = Vec::new();
+    if let Some(s) = a
+        .get("positioning_label")
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.trim().is_empty())
+    {
+        out.push(format!("Positioning: {}", truncate_chars(&clean_line(s), 140)));
+    }
     if let Some(s) = a.get("one_line_summary").and_then(|x| x.as_str()) {
         out.push(format!("Summary: {}", truncate_chars(&clean_line(s), 150)));
+    }
+    if let Some(s) = a
+        .get("what_it_actually_does")
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.trim().is_empty())
+    {
+        out.push(format!(
+            "In practice: {}",
+            truncate_chars(&clean_line(s), 150)
+        ));
     }
     if let Some(f) = a
         .get("core_features")
@@ -189,90 +302,16 @@ fn top_insights_from_analysis(a: &serde_json::Value) -> Vec<String> {
         .and_then(|arr| arr.first())
         .and_then(|x| x.as_str())
     {
-        out.push(format!("Feature: {}", truncate_chars(&clean_line(f), 150)));
+        out.push(format!("Capability: {}", truncate_chars(&clean_line(f), 150)));
     }
-    if let Some(u) = a.get("problem_it_solves").and_then(|x| x.as_str()) {
-        out.push(format!("Use case: {}", truncate_chars(&clean_line(u), 150)));
+    if let Some(u) = a.get("why_it_matters").and_then(|x| x.as_str()) {
+        out.push(format!("Value: {}", truncate_chars(&clean_line(u), 150)));
     }
     if out.is_empty() {
         out.push("Summary: Analysis available.".to_string());
     }
-    out.truncate(3);
+    out.truncate(5);
     out
-}
-
-fn build_linkedin_text(a: &serde_json::Value, length: &str, focus: &str) -> String {
-    let name = a
-        .get("project_name")
-        .and_then(|x| x.as_str())
-        .unwrap_or("my project");
-    let summary = clean_line(
-        a.get("one_line_summary")
-            .and_then(|x| x.as_str())
-            .unwrap_or("Built and shipped a practical tool."),
-    );
-    let stack = a
-        .get("tech_stack")
-        .and_then(|x| x.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str())
-                .take(4)
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_else(|| "Tauri + React".to_string());
-    let problem = clean_line(
-        a.get("problem_it_solves")
-            .and_then(|x| x.as_str())
-            .unwrap_or("It removes repeated manual explanation work."),
-    );
-    let outcome = clean_line(
-        a.get("why_it_matters")
-            .and_then(|x| x.as_str())
-            .unwrap_or("It speeds up delivery and communication."),
-    );
-
-    let short = match focus {
-        "describe_stack" => format!("Shipped {} with {}.\n{}\nBuilt for real usage.", name, stack, summary),
-        "describe_problem" => format!("Built {} to solve this: {}.\n{}\nNow the workflow is clearer and faster.", name, truncate_chars(&problem, 110), summary),
-        "describe_outcome" => format!("{} is now shipping faster.\n{}\n{}", name, summary, truncate_chars(&outcome, 100)),
-        _ => format!("Built {}.\n{}\n{}", name, summary, truncate_chars(&outcome, 100)),
-    };
-    if length == "short" {
-        return short;
-    }
-    match focus {
-        "describe_stack" => format!(
-            "Built {} using {}.\n{}\nFocused on simple flows and local-first behavior.\nNo extra backend layer.\nOutcome: {}",
-            name,
-            stack,
-            summary,
-            truncate_chars(&outcome, 120)
-        ),
-        "describe_problem" => format!(
-            "Built {} to solve a concrete issue.\nProblem: {}\nApproach: local scan + structured analysis + reusable outputs.\n{}\nOutcome: {}",
-            name,
-            truncate_chars(&problem, 120),
-            summary,
-            truncate_chars(&outcome, 120)
-        ),
-        "describe_outcome" => format!(
-            "{} now delivers this result:\n{}\n{}\nStack: {}\nShipped and used in real workflows.",
-            name,
-            truncate_chars(&outcome, 120),
-            summary,
-            stack
-        ),
-        _ => format!(
-            "Built {} and shipped it end-to-end.\n{}\nProblem: {}\nStack: {}\nOutcome: {}",
-            name,
-            summary,
-            truncate_chars(&problem, 100),
-            stack,
-            truncate_chars(&outcome, 110)
-        ),
-    }
 }
 
 //
@@ -297,6 +336,18 @@ fn get_project(state: State<'_, AppState>, id: i64) -> Result<Option<ProjectDeta
 fn delete_project(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     db::delete_project(&conn, id)
+}
+
+#[tauri::command]
+fn toggle_project_pin(state: State<'_, AppState>, id: i64, pinned: bool) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::set_project_pinned(&conn, id, pinned)
+}
+
+#[tauri::command]
+fn rename_project(state: State<'_, AppState>, id: i64, name: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::rename_project_by_user(&conn, id, &name)
 }
 
 #[tauri::command]
@@ -338,13 +389,57 @@ fn save_user_profile(state: State<'_, AppState>, profile: UserProfile) -> Result
     db::save_user_profile(&conn, &profile)
 }
 
+#[tauri::command]
+fn get_ai_settings(state: State<'_, AppState>) -> Result<AiSettingsPublic, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let row = db::get_app_ai_settings(&conn)?;
+    let provider = effective_ai_provider(&row.ai_provider);
+    let has_anthropic_key = !row.anthropic_api_key.trim().is_empty()
+        || std::env::var("ANTHROPIC_API_KEY")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+    let has_openai_key = !row.openai_api_key.trim().is_empty()
+        || std::env::var("OPENAI_API_KEY")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+    Ok(AiSettingsPublic {
+        provider,
+        anthropic_model: row.anthropic_model,
+        openai_model: row.openai_model,
+        has_anthropic_key,
+        has_openai_key,
+    })
+}
+
+#[tauri::command]
+fn save_ai_settings(state: State<'_, AppState>, input: SaveAiSettingsInput) -> Result<(), String> {
+    let prov = input.provider.trim().to_lowercase();
+    if prov != "anthropic" && prov != "openai" {
+        return Err("Provider must be Anthropic or OpenAI.".into());
+    }
+    if let Some(ref k) = input.api_key {
+        let t = k.trim();
+        if !t.is_empty() && prov == "anthropic" {
+            validate_anthropic_key_for_use(t)?;
+        }
+    }
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::save_app_ai_settings(
+        &conn,
+        &prov,
+        &input.model,
+        input.api_key.as_deref(),
+    )?;
+    Ok(())
+}
+
 //
 // ───────────────────────────────────────────────────────────
 // ANALYSIS CORE
 // ───────────────────────────────────────────────────────────
 //
 
-fn run_analysis_for_path(path_str: &str) -> Result<claude::AnalysisPayload, String> {
+fn run_analysis_for_path(bundle: &AiCallBundle, path_str: &str) -> Result<claude::AnalysisPayload, String> {
     let root = Path::new(path_str);
     let scan = scanner::scan_project(root)?;
 
@@ -365,81 +460,31 @@ fn run_analysis_for_path(path_str: &str) -> Result<claude::AnalysisPayload, Stri
     let user_message =
         claude::build_user_message(&folder_name, &scan, &scan.detected_stack);
 
-    let raw = match ai_provider().as_str() {
-        "openai" => {
-            let api_key = openai_key()?;
-            let model = openai_model();
-            openai::call_openai(&api_key, &model, &user_message)?
-        }
-        _ => {
-            let api_key = anthropic_key()?;
-            let model = anthropic_model();
-            claude::call_claude(&api_key, &model, &user_message)?
-        }
-    };
+    let raw = bundle.complete_project_analysis(&user_message)?;
 
     claude::parse_and_validate(&raw)
 }
 
 fn run_generate_opportunities_from_analysis(
+    bundle: &AiCallBundle,
     analysis: &serde_json::Value,
 ) -> Result<OpportunityPayload, String> {
     let user_message = opportunities::build_opportunity_user_message(analysis);
 
-    let raw = match ai_provider().as_str() {
-        "openai" => {
-            let api_key = openai_key()?;
-            let model = openai_model();
-            openai::call_openai_with_system(
-                &api_key,
-                &model,
-                opportunities::OPPORTUNITY_SYSTEM_PROMPT,
-                &user_message,
-            )?
-        }
-        _ => {
-            let api_key = anthropic_key()?;
-            let model = anthropic_model();
-            claude::call_claude_with_system(
-                &api_key,
-                &model,
-                opportunities::OPPORTUNITY_SYSTEM_PROMPT,
-                &user_message,
-            )?
-        }
-    };
+    let raw = bundle.complete_with_system(opportunities::OPPORTUNITY_SYSTEM_PROMPT, &user_message)?;
 
     opportunities::parse_and_validate_opportunities(&raw)
 }
 
 fn run_generate_case_study_from_analysis(
+    bundle: &AiCallBundle,
     analysis: &serde_json::Value,
     writer_context: Option<&UserProfile>,
 ) -> Result<CaseStudyPayload, String> {
     let user_message = case_study::build_case_study_user_message(analysis, writer_context);
 
-    let raw = match ai_provider().as_str() {
-        "openai" => {
-            let api_key = openai_key()?;
-            let model = openai_model();
-            openai::call_openai_with_system(
-                &api_key,
-                &model,
-                case_study::CASE_STUDY_SYSTEM_PROMPT,
-                &user_message,
-            )?
-        }
-        _ => {
-            let api_key = anthropic_key()?;
-            let model = anthropic_model();
-            claude::call_claude_with_system(
-                &api_key,
-                &model,
-                case_study::CASE_STUDY_SYSTEM_PROMPT,
-                &user_message,
-            )?
-        }
-    };
+    let raw =
+        bundle.complete_with_system(case_study::CASE_STUDY_SYSTEM_PROMPT, &user_message)?;
 
     case_study::parse_and_validate_case_study(&raw)
 }
@@ -484,19 +529,21 @@ fn generate_opportunities(
 
     eprintln!("CALLING AI: opportunities project_id={}", id);
 
-    let analysis = {
+    let (bundle, analysis) = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let bundle = resolve_ai_bundle(&conn)?;
         let detail = db::get_project_by_id(&conn, id)?
             .ok_or_else(|| "Project not found".to_string())?;
-        detail
+        let analysis = detail
             .analysis
             .ok_or_else(|| {
                 "No stored analysis for this project. Complete analysis first, then try again."
                     .to_string()
-            })?
+            })?;
+        (bundle, analysis)
     };
 
-    let payload = run_generate_opportunities_from_analysis(&analysis)?;
+    let payload = run_generate_opportunities_from_analysis(&bundle, &analysis)?;
 
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
@@ -543,8 +590,9 @@ fn generate_case_study(
 
     eprintln!("CALLING AI: case_study project_id={}", id);
 
-    let (analysis, profile) = {
+    let (bundle, analysis, profile) = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let bundle = resolve_ai_bundle(&conn)?;
         let detail = db::get_project_by_id(&conn, id)?
             .ok_or_else(|| "Project not found".to_string())?;
         let analysis = detail
@@ -554,10 +602,10 @@ fn generate_case_study(
                     .to_string()
             })?;
         let profile = db::get_user_profile(&conn)?;
-        (analysis, profile)
+        (bundle, analysis, profile)
     };
 
-    let payload = run_generate_case_study_from_analysis(&analysis, profile.as_ref())?;
+    let payload = run_generate_case_study_from_analysis(&bundle, &analysis, profile.as_ref())?;
 
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
@@ -602,7 +650,10 @@ fn rank_top_projects(state: State<'_, AppState>) -> Result<TopProjectsPayload, S
     }
 
     let user = living::build_rank_user_message(&summaries, profile.as_ref());
-    let raw = complete_ai_with_system(living::RANK_PROJECTS_PROMPT, &user)?;
+    let raw = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        complete_ai_with_system(&conn, living::RANK_PROJECTS_PROMPT, &user)?
+    };
     living::parse_top_projects(&raw, &allowed_ids)
 }
 
@@ -631,13 +682,16 @@ fn incremental_project_update(
         .unwrap_or("project")
         .to_string();
 
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let analysis = db::get_latest_analysis_json(&conn, id)?
-        .ok_or_else(|| "No stored analysis. Run full analyze first.".to_string())?;
-    drop(conn);
+    let (bundle, analysis) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let bundle = resolve_ai_bundle(&conn)?;
+        let analysis = db::get_latest_analysis_json(&conn, id)?
+            .ok_or_else(|| "No stored analysis. Run full analyze first.".to_string())?;
+        (bundle, analysis)
+    };
 
     let user_msg = living::build_incremental_scan_message(&analysis, &folder_name, &scan);
-    let raw = complete_ai_with_system(living::INCREMENTAL_UPDATE_PROMPT, &user_msg)?;
+    let raw = bundle.complete_with_system(living::INCREMENTAL_UPDATE_PROMPT, &user_msg)?;
     let payload = living::parse_incremental_update(&raw)?;
 
     let summary = format!(
@@ -667,13 +721,16 @@ fn suggest_evolution_steps(
     state: State<'_, AppState>,
     id: i64,
 ) -> Result<EvolutionSuggestionsPayload, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let analysis = db::get_latest_analysis_json(&conn, id)?
-        .ok_or_else(|| "No stored analysis for this project.".to_string())?;
-    drop(conn);
+    let (bundle, analysis) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let bundle = resolve_ai_bundle(&conn)?;
+        let analysis = db::get_latest_analysis_json(&conn, id)?
+            .ok_or_else(|| "No stored analysis for this project.".to_string())?;
+        (bundle, analysis)
+    };
 
     let user = serde_json::json!({ "project_analysis": analysis }).to_string();
-    let raw = complete_ai_with_system(living::EVOLUTION_SUGGEST_PROMPT, &user)?;
+    let raw = bundle.complete_with_system(living::EVOLUTION_SUGGEST_PROMPT, &user)?;
     living::parse_evolution_suggestions(&raw)
 }
 
@@ -682,14 +739,75 @@ fn get_positioning_clarity(
     state: State<'_, AppState>,
     id: i64,
 ) -> Result<PositioningPayload, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let analysis = db::get_latest_analysis_json(&conn, id)?
-        .ok_or_else(|| "No stored analysis for this project.".to_string())?;
-    drop(conn);
+    let (bundle, analysis) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let bundle = resolve_ai_bundle(&conn)?;
+        let analysis = db::get_latest_analysis_json(&conn, id)?
+            .ok_or_else(|| "No stored analysis for this project.".to_string())?;
+        (bundle, analysis)
+    };
 
     let user = serde_json::json!({ "project_analysis": analysis }).to_string();
-    let raw = complete_ai_with_system(living::POSITIONING_PROMPT, &user)?;
+    let raw = bundle.complete_with_system(living::POSITIONING_PROMPT, &user)?;
     living::parse_positioning(&raw)
+}
+
+fn title_case_folder_segment(seg: &str) -> String {
+    let lower = seg.to_ascii_lowercase();
+    if let Some(s) = match lower.as_str() {
+        "ai" => Some("AI"),
+        "ui" => Some("UI"),
+        "api" => Some("API"),
+        "os" => Some("OS"),
+        "id" => Some("ID"),
+        "sdk" => Some("SDK"),
+        "cli" => Some("CLI"),
+        "http" => Some("HTTP"),
+        "https" => Some("HTTPS"),
+        _ => None,
+    } {
+        return s.into();
+    }
+    let mut ch = seg.chars();
+    let Some(first) = ch.next() else {
+        return String::new();
+    };
+    first.to_uppercase().collect::<String>() + &ch.as_str().to_lowercase()
+}
+
+/// Turn a repo folder name into a demo-friendly display title (import default).
+fn humanize_folder_display_name(folder: &str) -> String {
+    let mut base = folder.trim();
+    if base.is_empty() {
+        return "Project".into();
+    }
+    const SUFFIXES: &[&str] = &["-main", "-master", "-develop"];
+    loop {
+        let mut cut = false;
+        for suf in SUFFIXES {
+            if let Some(s) = base.strip_suffix(suf) {
+                if s.len() >= 2 {
+                    base = s;
+                    cut = true;
+                    break;
+                }
+            }
+        }
+        if !cut {
+            break;
+        }
+    }
+    let out: String = base
+        .split(|c: char| c == '_' || c == '-' || c.is_whitespace())
+        .filter(|s| !s.is_empty())
+        .map(title_case_folder_segment)
+        .collect::<Vec<_>>()
+        .join(" ");
+    if out.is_empty() {
+        "Project".into()
+    } else {
+        out
+    }
 }
 
 //
@@ -704,34 +822,45 @@ fn import_project(state: State<'_, AppState>, path: String) -> Result<ProjectDet
     let canonical = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
     let path_str = canonical.to_string_lossy().to_string();
 
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-
-    if db::path_exists(&conn, &path_str)? {
-        return Err("Already imported.".into());
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        if db::path_exists(&conn, &path_str)? {
+            return Err("Already imported.".into());
+        }
     }
 
+    // Do not hold DB lock during filesystem scan or AI call (keeps UI responsive).
     let scan = scanner::scan_project(&canonical)?;
-    let name = canonical
+    let folder = canonical
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or("project")
-        .to_string();
+        .unwrap_or("project");
+    let name = humanize_folder_display_name(folder);
 
-    let id = db::insert_project(
-        &conn,
-        InsertProject {
-            name,
-            path: path_str.clone(),
-            detected_stack: scan.detected_stack.clone(),
-            file_index_json: scanner::index_sample_paths(&scan.file_index, 120),
-            file_index_truncated: scan.index_truncated,
-        },
-    )?;
+    let id = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        db::insert_project(
+            &conn,
+            InsertProject {
+                name,
+                path: path_str.clone(),
+                detected_stack: scan.detected_stack.clone(),
+                file_index_json: scanner::index_sample_paths(&scan.file_index, 120),
+                file_index_truncated: scan.index_truncated,
+            },
+        )?
+    };
 
-    match run_analysis_for_path(&path_str) {
+    let bundle = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        resolve_ai_bundle(&conn)?
+    };
+
+    match run_analysis_for_path(&bundle, &path_str) {
         Ok(analysis) => {
             let raw_json = serde_json::to_value(&analysis).map_err(|e| e.to_string())?;
 
+            let conn = state.db.lock().map_err(|e| e.to_string())?;
             db::update_project_after_analysis(
                 &conn,
                 id,
@@ -742,12 +871,16 @@ fn import_project(state: State<'_, AppState>, path: String) -> Result<ProjectDet
                 &analysis.how_it_works_step_by_step.join("\n"),
                 &analysis.how_to_run,
             )?;
-        }
-        Err(e) => return Err(format!("Saved but analysis failed: {}", e)),
-    }
+            db::apply_ai_display_name_if_allowed(&conn, id, &analysis.project_name)?;
 
-    db::get_project_by_id(&conn, id)?
-        .ok_or_else(|| "Failed to load project".to_string())
+            db::get_project_by_id(&conn, id)?
+                .ok_or_else(|| "Failed to load project".to_string())
+        }
+        Err(e) => Err(format!(
+            "Project was saved but analysis failed: {}. You can open it and try Re-analyze.",
+            e
+        )),
+    }
 }
 
 //
@@ -764,7 +897,12 @@ fn reanalyze_project(state: State<'_, AppState>, id: i64) -> Result<ProjectDetai
             .ok_or_else(|| "Project not found".to_string())?
     };
 
-    let analysis = run_analysis_for_path(&path)?;
+    let bundle = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        resolve_ai_bundle(&conn)?
+    };
+
+    let analysis = run_analysis_for_path(&bundle, &path)?;
     let raw_json = serde_json::to_value(&analysis).map_err(|e| e.to_string())?;
 
     let conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -778,6 +916,7 @@ fn reanalyze_project(state: State<'_, AppState>, id: i64) -> Result<ProjectDetai
         &analysis.how_it_works_step_by_step.join("\n"),
         &analysis.how_to_run,
     )?;
+    db::apply_ai_display_name_if_allowed(&conn, id, &analysis.project_name)?;
 
     db::get_project_by_id(&conn, id)?
         .ok_or_else(|| "Project disappeared".to_string())
@@ -795,7 +934,7 @@ fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus, Strin
                 || p.app_goal.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false)
         })
         .unwrap_or(false);
-    let has_api_key = anthropic_key().is_ok() || openai_key().is_ok();
+    let has_api_key = resolve_ai_bundle(&conn).is_ok();
     Ok(RuntimeStatus {
         has_api_key,
         has_profile,
@@ -812,19 +951,6 @@ fn get_project_importance(
         .ok_or_else(|| "No stored analysis for this project.".to_string())?;
     Ok(ProjectImportancePayload {
         top_insights: top_insights_from_analysis(&analysis),
-    })
-}
-
-#[tauri::command]
-fn generate_linkedin_post(
-    state: State<'_, AppState>,
-    args: LinkedinArgs,
-) -> Result<LinkedinResult, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let analysis = db::get_latest_analysis_json(&conn, args.id)?
-        .ok_or_else(|| "No stored analysis for this project.".to_string())?;
-    Ok(LinkedinResult {
-        text: build_linkedin_text(&analysis, &args.length, &args.focus),
     })
 }
 
@@ -901,10 +1027,6 @@ fn export_project_bundle(
     std::fs::write(out_dir.join("short-pitch.txt"), pitch).map_err(|e| e.to_string())?;
     written.push("short-pitch.txt".to_string());
 
-    let linkedin = build_linkedin_text(&analysis, "long", "describe_outcome");
-    std::fs::write(out_dir.join("linkedin-post.txt"), linkedin).map_err(|e| e.to_string())?;
-    written.push("linkedin-post.txt".to_string());
-
     if let Some(raw) = opp_cache {
         if let Ok(op) = serde_json::from_str::<OpportunityPayload>(&raw) {
             let mut body = String::from("# Opportunities\n\n");
@@ -932,8 +1054,11 @@ fn export_project_bundle(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let env_path = "/Users/zay/Desktop/Projects/project-explainer-os/src-tauri/.env";
-    dotenvy::from_path(env_path).ok();
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let env_path = Path::new(&manifest_dir).join(".env");
+        dotenvy::from_path(env_path).ok();
+    }
+    dotenvy::dotenv().ok();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -954,6 +1079,8 @@ pub fn run() {
             get_project,
             import_project,
             delete_project,
+            toggle_project_pin,
+            rename_project,
             reanalyze_project,
             generate_opportunities,
             save_idea_project,
@@ -963,13 +1090,14 @@ pub fn run() {
             generate_case_study,
             get_user_profile,
             save_user_profile,
+            get_ai_settings,
+            save_ai_settings,
             rank_top_projects,
             incremental_project_update,
             suggest_evolution_steps,
             get_positioning_clarity,
             get_runtime_status,
             get_project_importance,
-            generate_linkedin_post,
             export_project_bundle,
         ])
         .run(tauri::generate_context!())

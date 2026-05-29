@@ -3,3 +3,6 @@ dist/
 target/
 .env
 .DS_Store
+tsconfig.tsbuildinfo
+src-tauri/icons_backup_before_rename/
+.claude/

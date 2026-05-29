@@ -44,9 +44,6 @@ function buildExportText(cs: CaseStudyPayload): string {
       "```",
       "",
     ]),
-    "## LinkedIn (2 lines)",
-    cs.linkedin_hook,
-    "",
     "## One-liner",
     cs.quote_ready_one_liner,
   ];
@@ -87,6 +84,12 @@ export default function CaseStudy() {
     void loadProfile();
   }, [loadProjects, loadProfile]);
 
+  useEffect(() => {
+    const on = () => void loadProjects();
+    window.addEventListener("peo:projects-changed", on);
+    return () => window.removeEventListener("peo:projects-changed", on);
+  }, [loadProjects]);
+
   const analyzedProjects = useMemo(
     () => projects.filter((p) => !!p.last_analyzed_at),
     [projects]
@@ -109,9 +112,11 @@ export default function CaseStudy() {
 
       try {
         const result = await invoke<AiCaseStudyResult>("generate_case_study", {
-          id: Number(selectedId),
-          regenerate,
-        } satisfies { id: number; regenerate: boolean });
+          args: {
+            id: Number(selectedId),
+            regenerate,
+          },
+        });
         setData(result.payload);
         setFromCache(result.from_cache);
       } catch (e) {
@@ -158,7 +163,7 @@ export default function CaseStudy() {
       <p className="meta">
         Client-ready copy: problem, stakes, approach, outcome, plus illustrative
         proof (CLI / files / UI) inferred from your project—paste into proposals
-        or LinkedIn.
+        or portfolio pages.
       </p>
 
       {!profileReady && (
@@ -289,11 +294,6 @@ export default function CaseStudy() {
                 </div>
               ))}
             </div>
-          </div>
-
-          <div className="op-field">
-            <span className="op-label">LinkedIn hook</span>
-            <p className="op-body">{data.linkedin_hook}</p>
           </div>
 
           <div className="op-field">

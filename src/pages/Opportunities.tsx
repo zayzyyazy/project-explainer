@@ -19,11 +19,7 @@ export default function Opportunities() {
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [savedKeys, setSavedKeys] = useState<Set<string>>(() => new Set());
 
-  useEffect(() => {
-    void loadProjects();
-  }, []);
-
-  async function loadProjects() {
+  const loadProjects = useCallback(async () => {
     setError(null);
     try {
       const rows = await invoke<ProjectListItem[]>("list_projects");
@@ -31,7 +27,17 @@ export default function Opportunities() {
     } catch (e) {
       setError(String(e));
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    void loadProjects();
+  }, [loadProjects]);
+
+  useEffect(() => {
+    const on = () => void loadProjects();
+    window.addEventListener("peo:projects-changed", on);
+    return () => window.removeEventListener("peo:projects-changed", on);
+  }, [loadProjects]);
 
   const analyzedProjects = useMemo(
     () => projects.filter((p) => !!p.last_analyzed_at),

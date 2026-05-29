@@ -101,6 +101,19 @@ button {
   border-radius: 8px;
   padding: 1rem 1.1rem;
   background: #1a1d26;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+p,
+li {
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+h2,
+h3 {
+  margin-bottom: 8px;
 }
 
 .card h2 {
@@ -563,10 +576,156 @@ button {
   line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: anywhere;
   color: #c8d0e0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
   max-height: 280px;
   overflow: auto;
+}
+
+/* Project detail: readable prose (not terminal-style). */
+.project-detail-page {
+  display: grid;
+  gap: 1rem;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.project-detail-page .card {
+  overflow-x: hidden;
+  max-width: 100%;
+}
+
+.project-detail-page .intel-prose,
+.project-detail-page .intel-prose-wrap {
+  margin: 0 0 0.65rem;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  font-size: 0.95rem;
+  line-height: 1.65;
+  color: #d8dee8;
+  word-break: normal;
+  overflow-wrap: break-word;
+  hyphens: none;
+}
+
+.project-detail-page .intel-prose {
+  white-space: normal;
+}
+
+.project-detail-page .intel-prose-wrap {
+  white-space: pre-wrap;
+}
+
+.project-detail-page .intel-expand {
+  margin-bottom: 0.15rem;
+}
+
+.project-detail-page .intel-expand .intel-prose,
+.project-detail-page .intel-expand .intel-prose-wrap {
+  margin-bottom: 0.35rem;
+}
+
+.project-detail-page .intel-expand-toggle {
+  margin: 0 0 0.5rem;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #8ab4ff;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.project-detail-page .intel-expand-toggle:hover {
+  color: #b4c9ff;
+}
+
+.project-detail-page .intel-post {
+  margin: 0.65rem 0 0;
+  padding: 0.65rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid #2a2f3a;
+  background: #14161d;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  font-size: 0.92rem;
+  line-height: 1.65;
+  color: #d8dee8;
+  white-space: pre-wrap;
+  word-break: normal;
+  overflow-wrap: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.project-detail-page .intel-code-block {
+  margin: 0.35rem 0 0;
+  padding: 0.55rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid #2a2f3a;
+  background: #14161d;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: #c8d0e0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.project-detail-page .stack-tags .tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 0.72rem;
+}
+
+.project-detail-page h4 {
+  margin: 0 0 0.4rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: #b8c0d0;
+}
+
+.project-detail-page .intel-deep-section {
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid #2a2f3a;
+}
+
+.project-detail-page .intel-deep-section:first-of-type {
+  margin-top: 0.5rem;
+  padding-top: 0;
+  border-top: none;
+}
+
+.project-detail-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.25rem;
+}
+
+.project-detail-rename-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.project-detail-rename-row input {
+  flex: 1 1 200px;
+  min-width: 0;
+  padding: 0.4rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid #3d4454;
+  background: #14161d;
+  color: #e8e8ec;
+  font: inherit;
 }
 
 .setup-checks {

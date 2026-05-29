@@ -46,7 +46,6 @@ export interface CaseStudyPayload {
   outcome: string;
   outcome_basis: string;
   narrative: string;
-  linkedin_hook: string;
   quote_ready_one_liner: string;
   what_we_built: string[];
   proof_blocks: CaseStudyProofBlock[];
@@ -100,6 +99,8 @@ export interface AnalysisPayload {
   full_narrative_explanation?: string;
   problem_it_solves: string;
   why_it_matters: string;
+  /** Non-technical: user experience and workflow. */
+  what_it_actually_does?: string;
   core_features: string[];
   key_flows: string[];
   tech_stack: string[];
@@ -112,6 +113,12 @@ export interface AnalysisPayload {
   important_files: ImportantFile[];
   /** Present after analyses that include the Product Intelligence layer; re-analyze older projects to populate. */
   product_intelligence?: ProductIntelligence;
+  positioning_label?: string;
+  interview_talking_points?: string;
+  portfolio_positioning?: string;
+  /** Three strings: problem / solution / insight post angles. */
+  social_content_angles?: string[];
+  suggested_social_post?: string;
 }
 
 /** From `list_projects` only — id, name, summary; no path/stack/analysis. */
@@ -120,6 +127,7 @@ export interface ProjectListItem {
   name: string;
   one_line_summary: string;
   last_analyzed_at: string | null;
+  is_pinned: boolean;
 }
 
 /** Full project row (e.g. `get_project` / detail). */
@@ -131,6 +139,7 @@ export interface ProjectRow {
   one_line_summary: string;
   last_analyzed_at: string | null;
   created_at: string;
+  is_pinned: boolean;
 }
 
 export interface ProjectEvolutionEntry {
@@ -192,12 +201,17 @@ export interface RuntimeStatus {
   hasProfile: boolean;
 }
 
-export interface ProjectImportancePayload {
-  top_insights: string[];
+/** AI provider + models (keys are never returned; flags show if a key is configured). */
+export interface AiSettingsPublic {
+  provider: string;
+  anthropicModel: string;
+  openaiModel: string;
+  hasAnthropicKey: boolean;
+  hasOpenaiKey: boolean;
 }
 
-export interface LinkedinResult {
-  text: string;
+export interface ProjectImportancePayload {
+  top_insights: string[];
 }
 
 export interface ExportBundleResult {

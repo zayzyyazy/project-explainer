@@ -10,6 +10,7 @@ pub struct ProjectListItem {
     pub name: String,
     pub one_line_summary: String,
     pub last_analyzed_at: Option<String>,
+    pub is_pinned: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -21,6 +22,7 @@ pub struct ProjectRow {
     pub one_line_summary: String,
     pub last_analyzed_at: Option<String>,
     pub created_at: String,
+    pub is_pinned: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -130,6 +132,232 @@ fn migrate(conn: &Connection) -> Result<(), String> {
             "#,
         )
         .map_err(|e| e.to_string())?;
+    ensure_projects_pinned_column(conn)?;
+    ensure_projects_auto_rename_column(conn)?;
+    ensure_app_ai_settings_table(conn)?;
+    // Remove mistaken parallel job-tracking table (never part of product model).
+    conn.execute("DROP TABLE IF EXISTS tracked_jobs", [])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn ensure_projects_pinned_column(conn: &Connection) -> Result<(), String> {
+    let mut has_pinned = false;
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(projects)")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| e.to_string())?;
+    for col in rows {
+        if col.map_err(|e| e.to_string())? == "is_pinned" {
+            has_pinned = true;
+            break;
+        }
+    }
+    if !has_pinned {
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn ensure_app_ai_settings_table(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        r#"CREATE TABLE IF NOT EXISTS app_ai_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            ai_provider TEXT NOT NULL DEFAULT '',
+            anthropic_api_key TEXT NOT NULL DEFAULT '',
+            openai_api_key TEXT NOT NULL DEFAULT '',
+            anthropic_model TEXT NOT NULL DEFAULT '',
+            openai_model TEXT NOT NULL DEFAULT ''
+        )"#,
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR IGNORE INTO app_ai_settings (id) VALUES (1)",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Single-row app config for AI (keys stored in plain local SQLite; not OS keychain).
+#[derive(Debug, Clone)]
+pub struct AppAiSettingsRow {
+    pub ai_provider: String,
+    pub anthropic_api_key: String,
+    pub openai_api_key: String,
+    pub anthropic_model: String,
+    pub openai_model: String,
+}
+
+pub fn get_app_ai_settings(conn: &Connection) -> Result<AppAiSettingsRow, String> {
+    conn.query_row(
+        "SELECT ai_provider, anthropic_api_key, openai_api_key, anthropic_model, openai_model FROM app_ai_settings WHERE id = 1",
+        [],
+        |row| {
+            Ok(AppAiSettingsRow {
+                ai_provider: row.get(0)?,
+                anthropic_api_key: row.get(1)?,
+                openai_api_key: row.get(2)?,
+                anthropic_model: row.get(3)?,
+                openai_model: row.get(4)?,
+            })
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Updates provider + model for the active provider; updates API key only when `new_api_key` is Some(non-empty).
+pub fn save_app_ai_settings(
+    conn: &Connection,
+    provider: &str,
+    model_for_active_provider: &str,
+    new_api_key: Option<&str>,
+) -> Result<(), String> {
+    let mut row = get_app_ai_settings(conn)?;
+    let prov = provider.trim().to_lowercase();
+    if prov != "anthropic" && prov != "openai" {
+        return Err("Provider must be \"anthropic\" or \"openai\".".into());
+    }
+    row.ai_provider = prov.clone();
+    match prov.as_str() {
+        "openai" => {
+            row.openai_model = model_for_active_provider.trim().to_string();
+            if let Some(k) = new_api_key {
+                let t = k.trim();
+                if !t.is_empty() {
+                    row.openai_api_key = t.to_string();
+                }
+            }
+        }
+        _ => {
+            row.anthropic_model = model_for_active_provider.trim().to_string();
+            if let Some(k) = new_api_key {
+                let t = k.trim();
+                if !t.is_empty() {
+                    row.anthropic_api_key = t.to_string();
+                }
+            }
+        }
+    }
+    conn.execute(
+        "UPDATE app_ai_settings SET ai_provider = ?1, anthropic_api_key = ?2, openai_api_key = ?3, anthropic_model = ?4, openai_model = ?5 WHERE id = 1",
+        params![
+            row.ai_provider,
+            row.anthropic_api_key,
+            row.openai_api_key,
+            row.anthropic_model,
+            row.openai_model
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn ensure_projects_auto_rename_column(conn: &Connection) -> Result<(), String> {
+    let mut has = false;
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(projects)")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| e.to_string())?;
+    for col in rows {
+        if col.map_err(|e| e.to_string())? == "auto_rename_disabled" {
+            has = true;
+            break;
+        }
+    }
+    if !has {
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN auto_rename_disabled INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// If user has not locked the display name, set `name` from AI `project_name` (demo-ready title).
+pub fn apply_ai_display_name_if_allowed(
+    conn: &Connection,
+    project_id: i64,
+    ai_project_name: &str,
+) -> Result<(), String> {
+    let locked: i64 = conn
+        .query_row(
+            "SELECT auto_rename_disabled FROM projects WHERE id = ?1",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if locked != 0 {
+        return Ok(());
+    }
+    let candidate = sanitize_ai_display_name(ai_project_name);
+    if candidate.is_empty() {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE projects SET name = ?1 WHERE id = ?2",
+        params![candidate, project_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE idea_projects SET source_project_name = ?1 WHERE source_project_id = ?2",
+        params![candidate, project_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn sanitize_ai_display_name(s: &str) -> String {
+    let t: String = s.chars().filter(|c| !c.is_control()).collect();
+    let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    if t.is_empty() {
+        return String::new();
+    }
+    if t.len() <= 100 {
+        return t;
+    }
+    let slice = t.chars().take(100).collect::<String>();
+    if let Some(i) = slice.rfind(' ') {
+        if i > 12 {
+            return slice[..i].to_string();
+        }
+    }
+    slice
+}
+
+/// User-set display name; disables automatic renames from future analyses.
+pub fn rename_project_by_user(conn: &Connection, project_id: i64, new_name: &str) -> Result<(), String> {
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() {
+        return Err("Name cannot be empty.".into());
+    }
+    if trimmed.len() > 120 {
+        return Err("Name must be at most 120 characters.".into());
+    }
+    let n = conn
+        .execute(
+            "UPDATE projects SET name = ?1, auto_rename_disabled = 1 WHERE id = ?2",
+            params![trimmed, project_id],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("Project not found.".into());
+    }
+    conn.execute(
+        "UPDATE idea_projects SET source_project_name = ?1 WHERE source_project_id = ?2",
+        params![trimmed, project_id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -252,7 +480,7 @@ pub fn get_latest_analysis_json(
 pub fn list_projects(conn: &Connection) -> Result<Vec<ProjectListItem>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, name, one_line_summary, last_analyzed_at FROM projects ORDER BY datetime(created_at) DESC",
+            "SELECT id, name, one_line_summary, last_analyzed_at, is_pinned FROM projects ORDER BY is_pinned DESC, datetime(last_analyzed_at) DESC, datetime(created_at) DESC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -262,6 +490,7 @@ pub fn list_projects(conn: &Connection) -> Result<Vec<ProjectListItem>, String> 
                 name: row.get(1)?,
                 one_line_summary: row.get(2)?,
                 last_analyzed_at: row.get(3)?,
+                is_pinned: row.get::<_, i64>(4)? != 0,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -271,7 +500,7 @@ pub fn list_projects(conn: &Connection) -> Result<Vec<ProjectListItem>, String> 
 pub fn get_project_by_id(conn: &Connection, id: i64) -> Result<Option<ProjectDetail>, String> {
     let row: Option<ProjectRow> = conn
         .query_row(
-            "SELECT id, name, path, detected_stack, one_line_summary, last_analyzed_at, created_at FROM projects WHERE id = ?1",
+            "SELECT id, name, path, detected_stack, one_line_summary, last_analyzed_at, created_at, is_pinned FROM projects WHERE id = ?1",
             params![id],
             |row| {
                 let stack_json: String = row.get(3)?;
@@ -284,6 +513,7 @@ pub fn get_project_by_id(conn: &Connection, id: i64) -> Result<Option<ProjectDet
                     one_line_summary: row.get(4)?,
                     last_analyzed_at: row.get(5)?,
                     created_at: row.get(6)?,
+                    is_pinned: row.get::<_, i64>(7)? != 0,
                 })
             },
         )
@@ -449,6 +679,15 @@ pub fn delete_project(conn: &Connection, id: i64) -> Result<(), String> {
     conn
         .execute("DELETE FROM projects WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn set_project_pinned(conn: &Connection, id: i64, pinned: bool) -> Result<(), String> {
+    conn.execute(
+        "UPDATE projects SET is_pinned = ?2 WHERE id = ?1",
+        params![id, if pinned { 1 } else { 0 }],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 

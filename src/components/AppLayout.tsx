@@ -43,8 +43,10 @@ export default function AppLayout() {
 
           <nav className="top-nav">
             <Link to="/dashboard">Projects</Link>
+            <Link to="/settings">Settings</Link>
             <Link to="/setup">Profile</Link>
             <Link to="/opportunities">Opportunities</Link>
+            <Link to="/case-study">Case study</Link>
             <Link to="/idea-projects">Ideas</Link>
             <a href="https://example.com/feedback" target="_blank" rel="noreferrer">
               Feedback

@@ -18,7 +18,7 @@ const BUILD: { value: string; label: string }[] = [
 const GOALS: { value: string; label: string }[] = [
   { value: "get_clients", label: "Win clients / close work" },
   { value: "portfolio", label: "Portfolio & proposals" },
-  { value: "linkedin", label: "LinkedIn & content" },
+  { value: "proposals", label: "Proposals & pitches" },
   { value: "archive", label: "Archive & clarity" },
 ];
 

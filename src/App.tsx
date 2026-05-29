@@ -7,6 +7,7 @@ import IdeaProjects from "./pages/IdeaProjects";
 import Landing from "./pages/Landing";
 import Opportunities from "./pages/Opportunities";
 import ProjectDetail from "./pages/ProjectDetail";
+import Settings from "./pages/Settings";
 import Setup from "./pages/Setup";
 
 export default function App() {
@@ -16,6 +17,7 @@ export default function App() {
       <Route element={<AppLayout />}>
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="setup" element={<Setup />} />
+        <Route path="settings" element={<Settings />} />
         <Route path="case-study" element={<CaseStudy />} />
         <Route path="opportunities" element={<Opportunities />} />
         <Route path="idea-projects" element={<IdeaProjects />} />

@@ -45,15 +45,21 @@ pub struct ProductIntelligence {
 #[serde(rename_all = "snake_case")]
 pub struct AnalysisPayload {
     pub project_name: String,
+    /// Brief internal intent / build context (not the main user-facing story).
     pub project_intent: String,
     pub when_built: String,
     pub one_line_summary: String,
+    /// Technical / structural depth — keep for collapsible “deep” section only.
     pub deep_explanation: String,
     pub full_narrative_explanation: String,
     pub problem_it_solves: String,
     pub why_it_matters: String,
+    /// Non-technical: what happens when someone uses it, workflow replaced, user experience.
+    #[serde(default)]
+    pub what_it_actually_does: String,
     pub core_features: Vec<String>,
     pub key_flows: Vec<String>,
+    /// Stack hints only — short tokens; do not let this dominate the narrative.
     pub tech_stack: Vec<String>,
     pub architecture_overview: String,
     pub how_it_works_step_by_step: Vec<String>,
@@ -63,6 +69,21 @@ pub struct AnalysisPayload {
     pub example_outputs: Vec<String>,
     pub important_files: Vec<ImportantFile>,
     pub product_intelligence: ProductIntelligence,
+    /// One line, e.g. “human-in-the-loop AI ops tool” — portfolio category.
+    #[serde(default)]
+    pub positioning_label: String,
+    /// 3–5 bullets, natural interview lines (newline-separated or single string with bullets).
+    #[serde(default)]
+    pub interview_talking_points: String,
+    /// 2–4 sentences: how to present on portfolio / resume.
+    #[serde(default)]
+    pub portfolio_positioning: String,
+    /// Exactly 3 short strings: angle problem / angle solution / angle insight for posts.
+    #[serde(default)]
+    pub social_content_angles: Vec<String>,
+    /// Optional draft post.
+    #[serde(default)]
+    pub suggested_social_post: String,
 }
 
 //
@@ -96,12 +117,14 @@ pub fn build_user_message(
         .collect();
 
     json!({
-        "analysis_mode": "portfolio_deep_explanation",
+        "analysis_mode": "readme_first_v2",
         "folder_name": folder_name,
+        "readme_present": scan.readme_present,
+        "scan_notes": scan.scan_notes,
         "detected_stack_signals": stack_hint,
         "file_index_truncated": scan.index_truncated,
         "indexed_files": index_lines,
-        "selected_file_contents": files_json.into_iter().take(5).collect::<Vec<_>>(),
+        "selected_file_contents": files_json,
     })
     .to_string()
 }
@@ -156,7 +179,21 @@ pub fn trim_json_string_values(v: &mut serde_json::Value) {
 }
 
 fn strip_filler_words(s: &str) -> String {
-    let banned = ["robust", "leveraged", "seamless", "powerful"];
+    let banned = [
+        "robust",
+        "leveraged",
+        "seamless",
+        "powerful",
+        "cutting-edge",
+        "cutting edge",
+        "game-changer",
+        "game changer",
+        "unlock value",
+        "synergy",
+        "paradigm",
+        "revolutionary",
+        "thrilled",
+    ];
     let mut out = s.trim().to_string();
     for b in banned {
         out = out.replace(b, "");
@@ -221,6 +258,7 @@ pub fn parse_and_validate(json_str: &str) -> Result<AnalysisPayload, String> {
         "design_decisions",
         "tradeoffs_and_limitations",
         "example_outputs",
+        "social_content_angles",
     ];
 
     for f in top_level_arrays {
@@ -263,16 +301,36 @@ pub fn parse_and_validate(json_str: &str) -> Result<AnalysisPayload, String> {
 
     trim_json_string_values(&mut v);
 
+    if let Some(obj) = v.as_object_mut() {
+        for (key, default) in [
+            ("what_it_actually_does", json!("")),
+            ("positioning_label", json!("")),
+            ("interview_talking_points", json!("")),
+            ("portfolio_positioning", json!("")),
+            ("suggested_social_post", json!("")),
+        ] {
+            obj.entry(key.to_string()).or_insert(default);
+        }
+        obj.entry("social_content_angles".to_string())
+            .or_insert(json!([]));
+    }
+
     let mut parsed: AnalysisPayload =
         serde_json::from_value(v).map_err(|e| format!("Schema error: {}", e))?;
 
-    parsed.one_line_summary = shorten_text(&parsed.one_line_summary, 160);
-    parsed.deep_explanation = shorten_text(&parsed.deep_explanation, 260);
-    parsed.problem_it_solves = shorten_text(&parsed.problem_it_solves, 220);
-    parsed.why_it_matters = shorten_text(&parsed.why_it_matters, 220);
-    parsed.architecture_overview = shorten_text(&parsed.architecture_overview, 220);
-    parsed.full_narrative_explanation = clamp_lines(&parsed.full_narrative_explanation, 5);
-    clamp_list(&mut parsed.core_features, 6, 120);
+    parsed.one_line_summary = shorten_text(&parsed.one_line_summary, 200);
+    parsed.what_it_actually_does = shorten_text(&parsed.what_it_actually_does, 900);
+    parsed.positioning_label = shorten_text(&parsed.positioning_label, 120);
+    parsed.deep_explanation = shorten_text(&parsed.deep_explanation, 700);
+    parsed.problem_it_solves = shorten_text(&parsed.problem_it_solves, 450);
+    parsed.why_it_matters = shorten_text(&parsed.why_it_matters, 450);
+    parsed.architecture_overview = shorten_text(&parsed.architecture_overview, 500);
+    parsed.interview_talking_points = shorten_text(&parsed.interview_talking_points, 1400);
+    parsed.portfolio_positioning = shorten_text(&parsed.portfolio_positioning, 650);
+    parsed.suggested_social_post = shorten_text(&parsed.suggested_social_post, 800);
+    parsed.full_narrative_explanation = clamp_lines(&parsed.full_narrative_explanation, 8);
+    clamp_list(&mut parsed.core_features, 5, 160);
+    clamp_list(&mut parsed.social_content_angles, 3, 200);
     clamp_list(&mut parsed.key_flows, 5, 120);
     clamp_list(&mut parsed.tech_stack, 8, 48);
     clamp_list(&mut parsed.how_it_works_step_by_step, 5, 120);
@@ -310,6 +368,31 @@ pub fn parse_and_validate(json_str: &str) -> Result<AnalysisPayload, String> {
         return Err("important_files must not be empty".into());
     }
 
+    if parsed.what_it_actually_does.trim().is_empty() {
+        parsed.what_it_actually_does =
+            shorten_text(&format!("{} {}", parsed.one_line_summary, parsed.problem_it_solves), 800);
+    }
+    if parsed.positioning_label.trim().is_empty() {
+        parsed.positioning_label =
+            shorten_text(parsed.product_intelligence.category.as_str(), 120);
+    }
+    if parsed.social_content_angles.is_empty() {
+        parsed.social_content_angles = vec![
+            shorten_text(
+                &format!("Problem angle: {}", parsed.problem_it_solves),
+                200,
+            ),
+            shorten_text(
+                &format!("Solution angle: {}", parsed.one_line_summary),
+                200,
+            ),
+            shorten_text(
+                &format!("Insight angle: {}", parsed.why_it_matters),
+                200,
+            ),
+        ];
+    }
+
     Ok(parsed)
 }
 
@@ -319,38 +402,48 @@ pub fn parse_and_validate(json_str: &str) -> Result<AnalysisPayload, String> {
 // ───────────────────────────────────────────────────────────
 //
 
-pub const ANALYSIS_SYSTEM_PROMPT: &str = r#"You are a senior engineer analyzing a codebase snapshot in the user message. Write like a builder making decisions—not like a consultant writing a report.
+pub const ANALYSIS_SYSTEM_PROMPT: &str = r#"You are a PROJECT INTELLIGENCE analyst. Input: README-first JSON (README + a few configs + shallow file names). Your job is MEANING, VALUE, and POSITIONING — not documentation and not a code walkthrough.
 
 STRICT OUTPUT RULES:
-- Output a SINGLE JSON object only. No text before or after it.
-- Do NOT wrap the JSON in markdown code fences. Do NOT use ``` anywhere.
-- Do NOT include markdown headings, bold, or lists outside JSON. All prose must be INSIDE JSON string fields.
+- Output ONE JSON object only. No markdown fences. No prose outside JSON.
+- Ground claims in README/configs/index. If unknown, say so in confidence_notes — do not invent features.
+- Voice: direct, specific, human. Ban filler: "leverage", "robust", "seamless", "cutting-edge", "game-changer", "thrilled", "unlock value", "synergy", "ecosystem", "paradigm", "revolutionary".
 
-GROUNDING (NON-NEGOTIABLE):
-- Do NOT invent features, modules, integrations, or behaviors not evidenced by the provided files or clear file/index patterns.
-- Ground every factual claim in the snapshot (paths, code, config, filenames, stack signals). Prefer specific references over generalities.
-- If something is unclear or not visible in the snapshot, say "unknown" or state the uncertainty plainly in confidence_notes / possible_gaps_or_uncertainties—do not guess.
-- Never use vague hype: no "useful for many industries," "perfect for any team," "scalable platform for everyone," or similar.
+INTELLIGENCE LAYERS (this is the product — prioritize these over stack):
 
-VERBOSITY:
-- Keep dashboard fields SHORT: one_line_summary, problem_it_solves, why_it_matters, architecture_overview, list items—tight and scannable.
-- deep_explanation: at most ~6–8 short lines (plain sentences). Technical, concrete, no essay.
-- full_narrative_explanation: supplementary context only—moderate length, not a bloated whitepaper. Still non-empty and substantive, but not the dominant output.
-- Arrays (core_features, key_flows, etc.): short bullets, each one concrete; avoid repetition and theory.
+1) one_line_summary — MUST follow this shape: "A [type of system/tool] that [what it does] for [who]". One sentence, sharp.
 
-PRODUCT INTELLIGENCE:
-- Must be derived ONLY from this project’s actual capabilities as shown in the analysis—categories, users, channels, monetization, etc. must map to what the code/repo actually does.
-- Do NOT propose unrelated SaaS ideas, generic side products, or "you could also build X" that is not an extension of this codebase.
+2) what_it_actually_does — NON-TECHNICAL. What happens when someone uses it, what workflow it replaces or improves, what the user experiences. 4–8 short sentences max, no stack dump.
 
-Required top-level keys (exact names, snake_case):
-project_name, project_intent, when_built, one_line_summary, deep_explanation, full_narrative_explanation
+3) problem_it_solves — CONCRETE: current manual pain, inefficiency, inconsistency, or risk. No generic "teams struggle with communication."
+
+4) why_it_matters — VALUE: time, consistency, risk, decisions, scale — realistic, not exaggerated.
+
+5) core_features — EXACTLY 3 to 5 strings. Each = capability + user-visible value (not "uses React").
+
+6) interview_talking_points — STRING with 3 to 5 bullet lines (start lines with "- "). Confident, natural things to say in an interview. Not a feature list.
+
+7) positioning_label — ONE short phrase: what kind of project is this for a portfolio header (e.g. "local-first portfolio intelligence app", "human-in-the-loop triage workflow").
+
+8) portfolio_positioning — 2–4 sentences: how to frame the project on a portfolio or resume.
+
+TECH / DEEP (secondary — for collapsible "deep" UI only):
+- tech_stack: max 8 short tokens, hints only.
+- architecture_overview, deep_explanation, full_narrative_explanation, key_flows, how_it_works_step_by_step, design_decisions, tradeoffs: structured, short bullets/lines — NOT long essays. deep_explanation = technical glue + flow at high level.
+- project_intent: one line why it was built / scope (internal), not the main story (that is what_it_actually_does).
+
+product_intelligence: map to real use implied by README — category, target_users, use_cases, monetization_models, distribution_channels, product_stage, what_is_missing, strengths, risks, go_to_market { target_user, sell_as, where_to_sell, first_steps }.
+
+important_files: include README first when present; each object: path, why_it_matters, confidence_notes, possible_gaps_or_uncertainties.
+
+Required keys (snake_case, all required):
+project_name, project_intent, when_built, one_line_summary, what_it_actually_does, positioning_label
 problem_it_solves, why_it_matters
-core_features, key_flows, tech_stack (arrays of strings)
-architecture_overview
-how_it_works_step_by_step, design_decisions, tradeoffs_and_limitations, example_outputs (arrays of strings)
-how_to_run (string)
-important_files: array of objects with path, why_it_matters, confidence_notes, possible_gaps_or_uncertainties
-product_intelligence: object with category, target_users, use_cases, monetization_models, distribution_channels, product_stage, what_is_missing, strengths, risks (arrays where listed), and go_to_market: { target_user, sell_as, where_to_sell, first_steps }
+interview_talking_points, portfolio_positioning (strings)
+deep_explanation, full_narrative_explanation
+core_features, key_flows, tech_stack, architecture_overview
+how_it_works_step_by_step, design_decisions, tradeoffs_and_limitations, example_outputs
+how_to_run, important_files, product_intelligence
 
 Return only the JSON object."#;
 
@@ -359,6 +452,26 @@ Return only the JSON object."#;
 // CLAUDE API
 // ───────────────────────────────────────────────────────────
 //
+
+fn map_anthropic_http_error(status: u16, body: &str) -> String {
+    let lower = body.to_lowercase();
+    match status {
+        401 | 403 => "API request failed: invalid or revoked API key. Check Settings.".into(),
+        402 | 429 => {
+            "Provider may be out of credits or unavailable. Try again later or switch provider in Settings.".into()
+        }
+        _ if lower.contains("insufficient_quota")
+            || lower.contains("credit")
+            || lower.contains("billing") =>
+        {
+            "Provider may be out of credits or unavailable. Try again later or switch provider in Settings.".into()
+        }
+        _ => format!(
+            "API request failed (HTTP {}). Provider may be out of credits or unavailable.",
+            status
+        ),
+    }
+}
 
 pub fn call_claude(api_key: &str, model: &str, user_message: &str) -> Result<String, String> {
     call_claude_with_system(api_key, model, ANALYSIS_SYSTEM_PROMPT, user_message)
@@ -373,13 +486,13 @@ pub fn call_claude_with_system(
     user_message: &str,
 ) -> Result<String, String> {
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
+        .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|e| e.to_string())?;
 
     let key = api_key.trim();
     if key.is_empty() {
-        return Err("API key is empty".into());
+        return Err("API key missing. Add your key in Settings or set the provider API key in the environment.".into());
     }
 
     let strict_user_message = format!(
@@ -411,13 +524,13 @@ pub fn call_claude_with_system(
         .header("anthropic-version", "2023-06-01")
         .json(&body)
         .send()
-        .map_err(|e| format!("Network error: {}", e))?;
+        .map_err(|e| format!("API request failed: {} (check network).", e))?;
 
     let status = res.status();
     let raw = res.text().unwrap_or_default();
 
     if !status.is_success() {
-        return Err(format!("Claude API error: {}", raw));
+        return Err(map_anthropic_http_error(status.as_u16(), &raw));
     }
 
     let v: serde_json::Value = serde_json::from_str(&raw)

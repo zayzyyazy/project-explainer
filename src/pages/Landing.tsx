@@ -11,7 +11,7 @@ export default function Landing() {
         </h1>
         <p className="landing-sub">
           Scan a project folder, get Problem → Solution → Outcome plus
-          proposal- and LinkedIn-ready copy. Built for freelancers who ship
+          proposal-ready copy. Built for freelancers who ship
           well but sell weak. You bring your own OpenAI or Anthropic key.
         </p>
         <div className="landing-cta-row">

@@ -1,12 +1,19 @@
 use regex::Regex;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
 
-const MAX_FILE_CHARS: usize = 40_000;
-const MAX_INDEX_PATHS: usize = 400;
-const MAX_TOTAL_PAYLOAD_FILES: usize = 18;
+/// Per-file cap for text sent to the model (README-first keeps payloads small).
+const MAX_SINGLE_FILE_CHARS: usize = 14_000;
+/// Hard cap on total characters across all selected files.
+const MAX_TOTAL_AI_CHARS: usize = 46_000;
+/// Maximum files whose contents are read and sent to AI.
+const MAX_FILES_READ_CONTENT: usize = 20;
+/// Shallow tree index: max depth from project root (0 = root only; 2 = root + 2 levels).
+const INDEX_MAX_DEPTH: usize = 2;
+/// Cap indexed path entries (names only, cheap).
+const MAX_INDEX_PATHS: usize = 80;
 
 #[derive(Debug, Clone)]
 pub struct FileIndexEntry {
@@ -27,6 +34,10 @@ pub struct ScanResult {
     pub file_index: Vec<FileIndexEntry>,
     pub index_truncated: bool,
     pub selected_files: Vec<SelectedFile>,
+    /// True if a README was found at shallow depth and included in selection.
+    pub readme_present: bool,
+    /// Human-readable summary of what was scanned (for UI / debugging).
+    pub scan_notes: String,
 }
 
 static IGNORE_DIRS: &[&str] = &[
@@ -104,18 +115,18 @@ fn is_minified_path(rel: &str) -> bool {
     lower.contains(".min.") || lower.ends_with(".map")
 }
 
-fn read_text_limited(root: &Path, rel: &str) -> Option<String> {
+fn read_text_limited(root: &Path, rel: &str, max_chars: usize) -> Option<String> {
     let full = root.join(rel);
     let bytes = fs::read(&full).ok()?;
-    if bytes.len() > 2_000_000 {
+    if bytes.len() > 1_200_000 {
         return None;
     }
     let mut s = String::from_utf8_lossy(&bytes).into_owned();
-    if s.lines().take(50).any(|l| l.len() > 8000) {
+    if s.lines().take(40).any(|l| l.len() > 8000) {
         return None;
     }
-    if s.len() > MAX_FILE_CHARS {
-        s.truncate(MAX_FILE_CHARS);
+    if s.len() > max_chars {
+        s.truncate(max_chars);
         s.push_str("\n\n[TRUNCATED_BY_APP]");
     }
     Some(s)
@@ -129,21 +140,29 @@ fn extension_of(path: &str) -> String {
         .to_ascii_lowercase()
 }
 
-pub fn scan_project(root: &Path) -> Result<ScanResult, String> {
-    if !root.is_dir() {
-        return Err("Selected path is not a folder".into());
-    }
-
-    let root_canon = fs::canonicalize(root).map_err(|e| e.to_string())?;
+/// Shallow index only — skips ignored directories entirely (no deep crawl).
+fn build_shallow_index(root_canon: &Path) -> Result<(Vec<FileIndexEntry>, bool), String> {
     let mut index: Vec<FileIndexEntry> = Vec::new();
 
-    for entry in WalkDir::new(&root_canon).follow_links(false).into_iter().filter_map(|e| e.ok()) {
+    let walker = WalkDir::new(root_canon)
+        .follow_links(false)
+        .max_depth(INDEX_MAX_DEPTH)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.depth() == 0 {
+                return true;
+            }
+            let name = e.file_name().to_str().unwrap_or("");
+            !ignored_dir(name)
+        });
+
+    for entry in walker.filter_map(|e| e.ok()) {
         if !entry.file_type().is_file() {
             continue;
         }
         let path = entry.path();
         let rel = path
-            .strip_prefix(&root_canon)
+            .strip_prefix(root_canon)
             .map_err(|e| e.to_string())?
             .to_string_lossy()
             .replace('\\', "/");
@@ -162,29 +181,20 @@ pub fn scan_project(root: &Path) -> Result<ScanResult, String> {
         }
 
         let meta = entry.metadata().map_err(|e| e.to_string())?;
-        let size = meta.len();
         index.push(FileIndexEntry {
             rel_path: rel,
             extension: ext,
-            size,
+            size: meta.len(),
         });
+
+        if index.len() >= MAX_INDEX_PATHS {
+            break;
+        }
     }
 
     index.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
-    let index_truncated = index.len() > MAX_INDEX_PATHS;
-    if index.len() > MAX_INDEX_PATHS {
-        index.truncate(MAX_INDEX_PATHS);
-    }
-
-    let detected = detect_stack(&root_canon, &index);
-    let selected = select_files(&root_canon, &index)?;
-
-    Ok(ScanResult {
-        detected_stack: detected,
-        file_index: index,
-        index_truncated,
-        selected_files: selected,
-    })
+    let truncated = index.len() >= MAX_INDEX_PATHS;
+    Ok((index, truncated))
 }
 
 fn detect_stack(root: &Path, index: &[FileIndexEntry]) -> Vec<String> {
@@ -257,8 +267,31 @@ fn detect_stack(root: &Path, index: &[FileIndexEntry]) -> Vec<String> {
     out
 }
 
-fn select_files(root: &Path, index: &[FileIndexEntry]) -> Result<Vec<SelectedFile>, String> {
-    let by_rel: HashMap<String, &FileIndexEntry> = index.iter().map(|e| (e.rel_path.clone(), e)).collect();
+const README_CANDIDATES: &[&str] = &[
+    "README.md",
+    "Readme.md",
+    "readme.md",
+    "README.MD",
+    "README.rst",
+    "README",
+];
+
+const CONFIG_PRIORITY: &[&str] = &[
+    "package.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "Cargo.toml",
+    "tsconfig.json",
+    "tauri.conf.json",
+];
+
+/// README-first: at most [`MAX_FILES_READ_CONTENT`] files, [`MAX_TOTAL_AI_CHARS`] total text.
+fn select_readme_first_files(
+    root: &Path,
+    index: &[FileIndexEntry],
+) -> Result<(Vec<SelectedFile>, bool, String), String> {
+    let by_rel: std::collections::HashMap<String, &FileIndexEntry> =
+        index.iter().map(|e| (e.rel_path.clone(), e)).collect();
 
     let mut ordered: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -269,153 +302,121 @@ fn select_files(root: &Path, index: &[FileIndexEntry]) -> Result<Vec<SelectedFil
         }
     }
 
-    for p in [
-        "README.md",
-        "Readme.md",
-        "readme.md",
-        "README.rst",
-        "README",
-    ] {
-        if by_rel.contains_key(p) {
+    let mut readme_present = false;
+    for p in README_CANDIDATES {
+        if by_rel.contains_key(*p) {
             push(&mut ordered, &mut seen, p);
+            readme_present = true;
             break;
         }
     }
+    if !readme_present {
+        for e in index {
+            let base = Path::new(&e.rel_path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            let lower = base.to_ascii_lowercase();
+            if lower == "readme.md" || lower == "readme.rst" || base == "README" {
+                push(&mut ordered, &mut seen, e.rel_path.as_str());
+                readme_present = true;
+                break;
+            }
+        }
+    }
 
-    let config_patterns: &[&str] = &[
-        "package.json",
-        "requirements.txt",
-        "pyproject.toml",
-        "Cargo.toml",
-        "tsconfig.json",
-        "tauri.conf.json",
-        ".env.example",
-        "docker-compose.yml",
-        "Dockerfile",
-    ];
-    for p in config_patterns {
+    for p in CONFIG_PRIORITY {
         if by_rel.contains_key(*p) {
             push(&mut ordered, &mut seen, p);
         }
     }
 
-    for e in index {
-        if e.rel_path.ends_with("prisma/schema.prisma") {
+    if ordered.len() < MAX_FILES_READ_CONTENT {
+        let mut md_candidates: Vec<&FileIndexEntry> = index
+            .iter()
+            .filter(|e| e.extension == "md" || e.extension == "txt")
+            .filter(|e| !README_CANDIDATES.contains(&e.rel_path.as_str()))
+            .filter(|e| !is_minified_path(&e.rel_path))
+            .collect();
+        md_candidates.sort_by_key(|e| e.size);
+        for e in md_candidates {
+            if ordered.len() >= MAX_FILES_READ_CONTENT {
+                break;
+            }
             push(&mut ordered, &mut seen, e.rel_path.as_str());
         }
     }
 
-    for e in index {
-        let n = e.rel_path.as_str();
-        if Regex::new(r"(?i)(^|/)vite\.config\.(ts|js|mts|cts)$")
-            .ok()
-            .map(|re| re.is_match(n))
-            .unwrap_or(false)
-        {
-            push(&mut ordered, &mut seen, n);
-        }
-        if Regex::new(r"(?i)(^|/)next\.config\.(js|mjs|cjs|ts)$")
-            .ok()
-            .map(|re| re.is_match(n))
-            .unwrap_or(false)
-        {
-            push(&mut ordered, &mut seen, n);
-        }
-    }
-
-    let entry_names = [
-        "main.ts",
-        "main.tsx",
-        "main.js",
-        "main.jsx",
-        "App.tsx",
-        "App.jsx",
-        "App.vue",
-        "main.py",
-        "app.py",
-        "index.js",
-        "index.ts",
-        "index.tsx",
-        "server.js",
-        "server.ts",
-    ];
-
-    for e in index {
-        let file = Path::new(&e.rel_path)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        if entry_names.contains(&file) {
-            push(&mut ordered, &mut seen, e.rel_path.as_str());
-        }
-    }
-
-    for folder in ["src", "app", "lib", "components", "pages", "backend", "api"] {
-        let mut candidates: Vec<&FileIndexEntry> = index
-            .iter()
-            .filter(|e| {
-                e.rel_path.starts_with(&format!("{}/", folder))
-                    || e.rel_path.starts_with(&format!("{}/", folder.to_ascii_uppercase()))
-            })
-            .filter(|e| {
-                let ext = e.extension.as_str();
-                matches!(ext, "ts" | "tsx" | "js" | "jsx" | "vue" | "py" | "rs" | "go" | "java" | "kt")
-            })
-            .filter(|e| !is_minified_path(&e.rel_path))
-            .filter(|e| !is_lock_file(
-                Path::new(&e.rel_path)
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or(""),
-            ))
-            .collect();
-        candidates.sort_by_key(|e| e.size);
-        for c in candidates.iter().take(4) {
-            push(&mut ordered, &mut seen, c.rel_path.as_str());
-        }
-    }
-
-    if ordered.len() > MAX_TOTAL_PAYLOAD_FILES {
-        ordered.truncate(MAX_TOTAL_PAYLOAD_FILES);
-    }
-
-    let mut final_paths = ordered;
-
-    if final_paths.is_empty() {
-        let mut rest: Vec<&FileIndexEntry> = index
-            .iter()
-            .filter(|e| {
-                let ext = e.extension.as_str();
-                matches!(ext, "md" | "txt" | "ts" | "tsx" | "js" | "jsx" | "py" | "rs" | "go")
-            })
-            .filter(|e| !is_lock_file(
-                Path::new(&e.rel_path)
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or(""),
-            ))
-            .filter(|e| !is_minified_path(&e.rel_path))
-            .collect();
-        rest.sort_by_key(|e| e.size);
-        for e in rest.iter().take(6) {
-            final_paths.push(e.rel_path.clone());
-        }
+    if ordered.len() > MAX_FILES_READ_CONTENT {
+        ordered.truncate(MAX_FILES_READ_CONTENT);
     }
 
     let mut out: Vec<SelectedFile> = Vec::new();
-    for rel in final_paths {
+    let mut total_chars = 0usize;
+    let mut used_paths: Vec<String> = Vec::new();
+
+    for rel in ordered {
         if is_lock_file(Path::new(&rel).file_name().and_then(|s| s.to_str()).unwrap_or("")) {
             continue;
         }
         if is_minified_path(&rel) {
             continue;
         }
-        if let Some(content) = read_text_limited(root, &rel) {
+        if let Some(content) = read_text_limited(root, &rel, MAX_SINGLE_FILE_CHARS) {
+            let add = content.len().min(MAX_SINGLE_FILE_CHARS);
+            if total_chars + add > MAX_TOTAL_AI_CHARS {
+                break;
+            }
+            total_chars += content.len();
+            used_paths.push(rel.clone());
             out.push(SelectedFile { rel_path: rel, content });
+        }
+        if out.len() >= MAX_FILES_READ_CONTENT {
+            break;
         }
     }
 
-    Ok(out)
+    let notes = if used_paths.is_empty() {
+        "No readable README or config files in the first two folder levels.".to_string()
+    } else {
+        format!(
+            "README-first scan (depth≤{}): {} file(s), ~{} chars — {}",
+            INDEX_MAX_DEPTH,
+            used_paths.len(),
+            total_chars,
+            used_paths.join(", ")
+        )
+    };
+
+    Ok((out, readme_present, notes))
+}
+
+pub fn scan_project(root: &Path) -> Result<ScanResult, String> {
+    if !root.is_dir() {
+        return Err("Selected path is not a folder".into());
+    }
+
+    let root_canon = fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let (index, index_truncated) = build_shallow_index(&root_canon)?;
+
+    let detected = detect_stack(&root_canon, &index);
+    let (selected_files, readme_present, scan_notes) = select_readme_first_files(&root_canon, &index)?;
+
+    if selected_files.is_empty() {
+        return Err(
+            "No README or stack config found in the top folder levels. Add README.md (or package.json / Cargo.toml / pyproject.toml) at the project root, or pick a shallower folder."
+                .into(),
+        );
+    }
+
+    Ok(ScanResult {
+        detected_stack: detected,
+        file_index: index,
+        index_truncated,
+        selected_files,
+        readme_present,
+        scan_notes,
+    })
 }
 
 pub fn index_sample_paths(entries: &[FileIndexEntry], limit: usize) -> Vec<String> {

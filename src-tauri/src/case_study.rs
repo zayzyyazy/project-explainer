@@ -27,7 +27,6 @@ pub struct CaseStudyPayload {
     pub outcome: String,
     pub outcome_basis: String,
     pub narrative: String,
-    pub linkedin_hook: String,
     pub quote_ready_one_liner: String,
     pub what_we_built: Vec<String>,
     /// 1–4 concrete “proof” snippets: inferred realistic CLI output, file/sample output, or what the UI shows
@@ -66,11 +65,10 @@ CASE STUDY STRUCTURE (business language, proposal-ready):
 
 LENGTH:
 - title: punchy, < 90 chars if possible.
-- linkedin_hook: exactly 2 short sentences.
 - quote_ready_one_liner: one speakable sentence.
 
 Required JSON keys (exact snake_case):
-title, problem, why_it_mattered, approach, solution, outcome, outcome_basis, narrative, linkedin_hook, quote_ready_one_liner, what_we_built (array of strings), proof_blocks (array of objects with kind, title, body)
+title, problem, why_it_mattered, approach, solution, outcome, outcome_basis, narrative, quote_ready_one_liner, what_we_built (array of strings), proof_blocks (array of objects with kind, title, body)
 
 Return only the JSON object."#;
 

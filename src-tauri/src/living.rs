@@ -52,7 +52,7 @@ pub struct TopProjectsPayload {
 
 pub const RANK_PROJECTS_PROMPT: &str = r#"You are a portfolio strategist. You receive JSON with "writer_context" (optional) and "projects" — each project has id, name, and a compact analysis summary (snippets from stored analysis).
 
-TASK: Pick the TOP projects (at most 3, fewer if fewer than 3 projects exist) that best match the user's stated goal in writer_context.app_goal (e.g. get_clients → easiest to explain, relatable, sellable; portfolio → strongest story; linkedin → sharable; archive → clearest documentation).
+TASK: Pick the TOP projects (at most 3, fewer if fewer than 3 projects exist) that best match the user's stated goal in writer_context.app_goal (e.g. get_clients → easiest to explain, relatable, sellable; portfolio → strongest story; proposals → clearest pitch; archive → clearest documentation).
 
 Score mentally on: clarity of problem/solution, strength of use case, sellability / presentability, perceived polish/completeness — all inferred from text only.
 
